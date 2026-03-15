@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.local/
+build/
+gwbasic-workspace/
+runtime/
+third_party/RunCPM/
+downloads/MBASIC.COM
+downloads/mbasic.zip
+downloads/blueMSXv282full.exe
+downloads/gwbasic/GWBASIC.EXE
+downloads/gwbasic/gwbasic-3.23.7z
+downloads/msx/*.rom
+downloads/pc8001/*.rom
+downloads/qbasic/QBASIC.EXE
+downloads/qbasic/qbasic-1.1.zip
