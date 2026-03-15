@@ -283,6 +283,14 @@ PY
 
             env = os.environ.copy()
             env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            template_path = temp_path / "fdppconf.sys"
+            template_path.write_text(
+                "devicehigh=dosemu\\ems.sys\n"
+                "devicehigh=dosemu\\cdrom.sys\n"
+                "devicehigh=dosemu\\emufs.sys /all\n",
+                encoding="ascii",
+            )
+            env["CLASSIC_BASIC_DOSEMU_FDPPCONF_TEMPLATE"] = str(template_path)
             runtime_path = temp_path / "gwbasic-runtime"
             home_path = temp_path / "gwbasic-home"
             result = _run(
@@ -303,6 +311,9 @@ PY
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((runtime_path / "drive_c/GWBASIC.EXE").exists())
             self.assertTrue((runtime_path / "drive_c/EXITEMU.COM").exists())
+            fdppconf = (home_path / ".dosemu/fdppconf.sys").read_text(encoding="ascii")
+            self.assertNotIn("devicehigh=dosemu\\cdrom.sys", fdppconf)
+            self.assertIn("devicehigh=dosemu\\emufs.sys /all", fdppconf)
             self.assertIn("Prepared GW-BASIC runtime", result.stderr)
 
     def test_setup_qbasic_prepares_runtime(self) -> None:
@@ -350,6 +361,14 @@ PY
 
             env = os.environ.copy()
             env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            template_path = temp_path / "fdppconf.sys"
+            template_path.write_text(
+                "devicehigh=dosemu\\ems.sys\n"
+                "devicehigh=dosemu\\cdrom.sys\n"
+                "devicehigh=dosemu\\emufs.sys /all\n",
+                encoding="ascii",
+            )
+            env["CLASSIC_BASIC_DOSEMU_FDPPCONF_TEMPLATE"] = str(template_path)
             runtime_path = temp_path / "qbasic-runtime"
             home_path = temp_path / "qbasic-home"
             result = _run(
@@ -370,4 +389,7 @@ PY
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((runtime_path / "drive_c/QBASIC.EXE").exists())
             self.assertTrue((runtime_path / "drive_c/EXITEMU.COM").exists())
+            fdppconf = (home_path / ".dosemu/fdppconf.sys").read_text(encoding="ascii")
+            self.assertNotIn("devicehigh=dosemu\\cdrom.sys", fdppconf)
+            self.assertIn("devicehigh=dosemu\\emufs.sys /all", fdppconf)
             self.assertIn("Prepared QBasic runtime", result.stderr)

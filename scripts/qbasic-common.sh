@@ -91,6 +91,7 @@ prepare_qbasic_runtime() {
 
   chmod 1777 /tmp/dosemu2_0
   chmod 777 "${runtime_dir}" "${runtime_dir}/drive_c" "${home_dir}" "${home_dir}/.dosemu" "${home_dir}/.config" "${home_dir}/.config/pulse"
+  prepare_dosemu_home "${home_dir}"
 
   echo "Prepared QBasic runtime at ${runtime_dir}" >&2
   echo "Prepared dosemu HOME at ${home_dir}" >&2

@@ -152,13 +152,66 @@ dosemu_direct_bin() {
 }
 
 dosemu_batch_use_pty() {
-  # Returns 0 (true) only when CLASSIC_BASIC_DOSEMU_PTY is explicitly set to
-  # on/1/true/yes.  Default is off; PTY allocation via 'script' requires
-  # /dev/ptmx access which is not available in all sandbox environments.
-  case "${CLASSIC_BASIC_DOSEMU_PTY:-off}" in
+  # Default is auto: use a clean PTY when util-linux `script` can allocate one,
+  # otherwise fall back to direct non-PTY execution. Explicit on/off remains
+  # available for tests and debugging.
+  case "${CLASSIC_BASIC_DOSEMU_PTY:-auto}" in
     1 | on | true | yes) return 0 ;;
-    *) return 1 ;;
+    0 | off | false | no) return 1 ;;
+    auto)
+      can_run_script_pty
+      return
+      ;;
+    *)
+      return 1
+      ;;
   esac
+}
+
+dosemu_fdppconf_template() {
+  local candidate
+
+  if [[ -n "${CLASSIC_BASIC_DOSEMU_FDPPCONF_TEMPLATE:-}" ]]; then
+    candidate="${CLASSIC_BASIC_DOSEMU_FDPPCONF_TEMPLATE}"
+    [[ -f "${candidate}" ]] && printf '%s\n' "${candidate}" && return 0
+    return 1
+  fi
+
+  for candidate in \
+    /usr/share/dosemu/dosemu2-cmds-0.3/fdppconf.sys \
+    /usr/share/dosemu/commands/fdppconf.sys
+  do
+    [[ -f "${candidate}" ]] && printf '%s\n' "${candidate}" && return 0
+  done
+
+  return 1
+}
+
+prepare_dosemu_home() {
+  local home_dir="$1"
+  local fdppconf_path="${home_dir}/.dosemu/fdppconf.sys"
+  local template_path=""
+
+  template_path="$(dosemu_fdppconf_template 2>/dev/null || true)"
+  [[ -n "${template_path}" ]] || return 0
+
+  python3 - "${template_path}" "${fdppconf_path}" <<'PY'
+import pathlib
+import sys
+
+source_path = pathlib.Path(sys.argv[1])
+destination_path = pathlib.Path(sys.argv[2])
+
+text = source_path.read_text(encoding="utf-8")
+lines = []
+for line in text.splitlines():
+    if line.strip().lower() == r"devicehigh=dosemu\cdrom.sys":
+        continue
+    lines.append(line)
+
+destination_path.parent.mkdir(parents=True, exist_ok=True)
+destination_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
 }
 
 dosemu_interactive_pty_backend() {

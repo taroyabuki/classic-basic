@@ -205,6 +205,30 @@ class DosRunnerWrapperTests(unittest.TestCase):
             self.assertEqual(result.stdout.splitlines(), ["PTY OUTPUT"])
             self.assertTrue(logs["script"].exists(), "script should have been invoked for PTY")
 
+    def test_gwbasic_file_run_uses_pty_automatically_when_script_is_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, logs = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_GWBASIC_ARCHIVE": str(temp_path / "downloads/gwbasic/gwbasic-3.23.7z"),
+                    "CLASSIC_BASIC_GWBASIC_EXE": str(temp_path / "downloads/gwbasic/GWBASIC.EXE"),
+                    "FAKE_DOS_CAPTURE_CONTENT": "AUTO PTY\r\n",
+                }
+            )
+
+            result, _ = self._run_wrapper(
+                env=env,
+                runtime_name="gwbasic-runtime",
+                home_name="gwbasic-home",
+                runner=ROOT_DIR / "run/gwbasic.sh",
+                source_name="gwbasic.bas",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), ["AUTO PTY"])
+            self.assertTrue(logs["script"].exists(), "script should have been invoked in auto mode")
+
     def test_gwbasic_timeout_option_exports_batch_timeout_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
