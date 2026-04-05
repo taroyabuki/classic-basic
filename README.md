@@ -4,14 +4,18 @@
 
 冒頭の整理として、このリポジトリで扱っている BASIC は次のとおりです。
 
-| BASIC | 年代 | 代表的な対象コンピュータ | 浮動小数点数の規格 |
+| BASIC | 時期 | 代表的な対象コンピュータ | 浮動小数点数の規格 |
 | --- | --- | --- | --- |
 | 6502 BASIC | 1977 | Ohio Scientific C1P / Challenger 1P 系 | Microsoft 6502 BASIC small FP (`CONFIG_SMALL`) |
-| BASIC-80 | 1977-1980 | 汎用 CP/M-80 マシン | Microsoft Binary Format (MBF) |
+| BASIC-80 | 1977 | 汎用 CP/M-80 マシン | Microsoft Binary Format (MBF) |
 | N-BASIC | 1979 | NEC PC-8001 | Microsoft Binary Format (MBF) |
+| N88-BASIC | 1981 | NEC PC-8801 | Microsoft Binary Format (MBF) |
+| FM-7 F-BASIC | 1982 | Fujitsu FM-7 | Microsoft Binary Format (MBF) |
+| FM-11 F-BASIC | 1982 | Fujitsu FM-11 | Microsoft Binary Format (MBF) |
 | GW-BASIC | 1983 | IBM PC 互換機 | Microsoft Binary Format (MBF) |
-| MSX-BASIC | 1983-1988 | MSX / MSX2 / MSX2+ 系 | BCD (packed BCD, 底 10) |
+| MSX-BASIC | 1983 | MSX / MSX2 / MSX2+ 系 | BCD (packed BCD, 底 10) |
 | QBasic | 1991 | MS-DOS 5 世代の IBM PC 互換機 | IEEE 754 binary64 |
+| Grant BASIC | 2012 | Grant Searle Simple Z80 SBC | Microsoft Binary Format (MBF) |
 
 ## セットアップ
 
@@ -20,46 +24,70 @@
 | 6502 BASIC | [6502.sh](setup/6502.sh) | `./setup/6502.sh` |
 | BASIC-80 | [basic80.sh](setup/basic80.sh) | `./setup/basic80.sh` |
 | N-BASIC | [nbasic.sh](setup/nbasic.sh) | `./setup/nbasic.sh` |
+| N88-BASIC | [n88basic.sh](setup/n88basic.sh) | `./setup/n88basic.sh` |
+| FM-7 F-BASIC | [fm7basic.sh](setup/fm7basic.sh) | `./setup/fm7basic.sh` |
+| FM-11 F-BASIC | [fm11basic.sh](setup/fm11basic.sh) | `./setup/fm11basic.sh` |
 | GW-BASIC | [gwbasic.sh](setup/gwbasic.sh) | `./setup/gwbasic.sh` |
 | MSX-BASIC | [msxbasic.sh](setup/msxbasic.sh) | `./setup/msxbasic.sh` |
 | QBasic | [qbasic.sh](setup/qbasic.sh) | `./setup/qbasic.sh` |
+| Grant BASIC | [grantsbasic.sh](setup/grantsbasic.sh) | `./setup/grantsbasic.sh` |
 
 ## 対話的な利用
+
+`./run/スクリプトファイル` で通常の対話モードを起動します。対話モードは `Ctrl-D` で終了します。
 
 | BASIC | スクリプト | 実行方法 |
 | --- | --- | --- |
 | 6502 BASIC | [6502.sh](run/6502.sh) | `./run/6502.sh` |
 | BASIC-80 | [basic80.sh](run/basic80.sh) | `./run/basic80.sh` |
 | N-BASIC | [nbasic.sh](run/nbasic.sh) | `./run/nbasic.sh` |
+| N88-BASIC | [n88basic.sh](run/n88basic.sh) | `./run/n88basic.sh` |
+| FM-7 F-BASIC | [fm7basic.sh](run/fm7basic.sh) | `./run/fm7basic.sh` |
+| FM-11 F-BASIC | [fm11basic.sh](run/fm11basic.sh) | `./run/fm11basic.sh` |
 | GW-BASIC | [gwbasic.sh](run/gwbasic.sh) | `./run/gwbasic.sh` |
 | MSX-BASIC | [msxbasic.sh](run/msxbasic.sh) | `./run/msxbasic.sh` |
 | QBasic | [qbasic.sh](run/qbasic.sh) | `./run/qbasic.sh` |
+| Grant BASIC | [grantsbasic.sh](run/grantsbasic.sh) | `./run/grantsbasic.sh` |
 
 ## ファイルの実行
+
+`./run/スクリプトファイル --file ファイル名` とすると、ファイルに書かれた行番号付き BASIC プログラムを読み込んだ状態で対話モードを起動します。この場合はまだ実行されないので、対話中に `RUN` を入力すれば実行できます。対話モードは `Ctrl-D` で終了します。
+
+`./run/スクリプトファイル --run --file ファイル名` とすると、同じ読み込み済み状態からプログラムを実行し、プログラム終了後に対話モードも終了します。`PRINT` などの出力は標準出力に出力します。`INPUT` などプログラム実行中の入力要求は未対応で、未対応の実装では即エラー終了します。すでに対応している処理系はそのままです。
+
+`--file` で与えるソースは ASCII だけで書かれている前提です。改行コードは `LF` / `CRLF` / `CR` を受理します。
 
 | BASIC | スクリプト | 実行方法 | 動作確認 |
 | --- | --- | --- | --- |
 | 6502 BASIC | [6502.sh](run/6502.sh) | `./run/6502.sh --run --file ファイル名` | `./run/6502.sh --run --file demo/6502.bas` |
 | BASIC-80 | [basic80.sh](run/basic80.sh) | `./run/basic80.sh --run --file ファイル名` | `./run/basic80.sh --run --file demo/basic80.bas` |
 | N-BASIC | [nbasic.sh](run/nbasic.sh) | `./run/nbasic.sh --run --file ファイル名` | `./run/nbasic.sh --run --file demo/nbasic.bas` |
+| N88-BASIC | [n88basic.sh](run/n88basic.sh) | `./run/n88basic.sh --run --file ファイル名` | `./run/n88basic.sh --run --file demo/n88basic.bas` |
+| FM-7 F-BASIC | [fm7basic.sh](run/fm7basic.sh) | `./run/fm7basic.sh --run --file ファイル名` | `./run/fm7basic.sh --run --file demo/fm7basic.bas` |
+| FM-11 F-BASIC | [fm11basic.sh](run/fm11basic.sh) | `./run/fm11basic.sh --run --file ファイル名` | `./run/fm11basic.sh --run --file demo/fm11basic.bas` |
 | GW-BASIC | [gwbasic.sh](run/gwbasic.sh) | `./run/gwbasic.sh --run --file ファイル名` | `./run/gwbasic.sh --run --file demo/gwbasic.bas` |
 | MSX-BASIC | [msxbasic.sh](run/msxbasic.sh) | `./run/msxbasic.sh --run --file ファイル名` | `./run/msxbasic.sh --run --file demo/msxbasic.bas` |
 | QBasic | [qbasic.sh](run/qbasic.sh) | `./run/qbasic.sh --run --file ファイル名` | `./run/qbasic.sh --run --file demo/qbasic.bas` |
+| Grant BASIC | [grantsbasic.sh](run/grantsbasic.sh) | `./run/grantsbasic.sh --run --file ファイル名` | `./run/grantsbasic.sh --run --file demo/grantsbasic.bas` |
 
 ## ファイルを読み込んで対話（`-f` / `--file`）
 
-`--file` オプションを使うと、ファイルをメモリに読み込んだ状態で対話端末を起動します（`RUN` はしません）。
-`--run --file` を付けると非対話で実行して終了します。`--file` を省略すると通常の対話起動です。実行時間は既定で無制限です。必要なときだけ `--timeout 90` や `--timeout 2m` のように指定してください。
+`--file` オプションを使うと、行番号付き BASIC ソースをメモリに読み込んだ状態で対話端末を起動します（`RUN` はしません）。対話中に `RUN` を入力すれば実行できます。
+`--run --file` を付けると、読み込み済みプログラムを実行し、プログラム終了後に対話モードも終了します。`--file` を省略すると通常の対話起動です。対話モードは `Ctrl-D` で終了します。`--file` で与えるソースは ASCII 前提で、改行コードは `LF` / `CRLF` / `CR` を受理します。実行時間は既定で無制限です。必要なときだけ `--timeout 90` や `--timeout 2m` のように指定してください。
 
-Codex 上では、`codex --ask-for-approval never` のような特殊な approval / sandbox 条件を標準の再現環境とはみなさないでください。特に GW-BASIC / QBasic は対話確認では PTY / TTY 条件が重要で、file-run も sandbox や dosemu2 の実行条件に影響されます。`openpt failed Permission denied` や `Bad or missing Command Interpreter: E:\command.com` のような dosemu2 起動失敗が出ている条件では、その結果だけで挙動を判断しないでください。
+既定では、`INPUT` / `LINE INPUT` / `INPUT$` / `INKEY$` のようなプログラム実行中の入力要求は `--run --file` で未対応です。対応していない処理系では即エラー終了します。
 
 | BASIC | 読み込んで対話 | 実行して終了 |
 | --- | --- | --- |
 | 6502 BASIC | `./run/6502.sh --file demo/6502.bas` | `./run/6502.sh --run --file demo/6502.bas` |
 | BASIC-80 | `./run/basic80.sh --file demo/basic80.bas` | `./run/basic80.sh --run --file demo/basic80.bas` |
 | N-BASIC | `./run/nbasic.sh --file demo/nbasic.bas` | `./run/nbasic.sh --run --file demo/nbasic.bas` |
+| N88-BASIC | `./run/n88basic.sh --file demo/n88basic.bas` | `./run/n88basic.sh --run --file demo/n88basic.bas` |
+| FM-7 F-BASIC | `./run/fm7basic.sh --file demo/fm7basic.bas` | `./run/fm7basic.sh --run --file demo/fm7basic.bas` |
+| FM-11 F-BASIC | `./run/fm11basic.sh --file demo/fm11basic.bas` | `./run/fm11basic.sh --run --file demo/fm11basic.bas` |
 | GW-BASIC | `./run/gwbasic.sh --file demo/gwbasic.bas` | `./run/gwbasic.sh --run --file demo/gwbasic.bas` |
 | MSX-BASIC | `./run/msxbasic.sh --file demo/msxbasic.bas` | `./run/msxbasic.sh --run --file demo/msxbasic.bas` |
 | QBasic | `./run/qbasic.sh --file demo/qbasic.bas` | `./run/qbasic.sh --run --file demo/qbasic.bas` |
+| Grant BASIC | `./run/grantsbasic.sh --file demo/grantsbasic.bas` | `./run/grantsbasic.sh --run --file demo/grantsbasic.bas` |
 
-詳細な実行経路、タイムアウト、対話テスト、忠実度メモは [details.md](details.md) を参照してください。
+実行経路、処理系ごとの差分、環境依存の注意点、忠実度メモは [details.md](details.md) を参照してください。

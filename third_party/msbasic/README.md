@@ -1,5 +1,25 @@
 # Microsoft BASIC for 6502
 
+## Provenance In This Repository
+
+This directory matches the public `mist64/msbasic` project:
+https://github.com/mist64/msbasic
+
+The local `README.md` text matches that upstream repository's README as checked on
+2026-04-05.
+
+Files used directly by this repository:
+
+- `osi.bin`
+  - SHA-256: `3fbb052d13d376cc8b7d2d72a45f386deafa88a5bc0fa1a74d6b69b2352f14c3`
+- `osi.lbl`
+  - SHA-256: `64f8b467d51768e90abd8dd1b54bb558a7f0891af0b13b7938573c9f2ea066d4`
+
+Known limitation:
+
+- The exact upstream commit from which these files were copied into this repository
+  is not recorded in local git history.
+
 This is a single integrated assembly source tree that can generate nine different versions of Microsoft BASIC for 6502.
 
 By running ./make.sh, this will generate all versions and compare them to the original files byte by byte. The CC65 compiler suite is need to build this project.
