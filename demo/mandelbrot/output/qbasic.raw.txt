@@ -1,0 +1,81 @@
+Note that DOS needs 25 lines. You might want to enlarge your
+window before starting dosemu.
+
+[?1001s[?9h[?1000h[?1002h[?1003h[?1006h[?1h[?1049h[22;0;0t[1;24r[4l[?12l[?25h(B[m[37m[40m[1;24r[H[2J[11;19H[1;1Hdosemu2 2.0pre9
+Get the latest code at http://dosemu2.github.io/dosemu2
+Submit Bugs via https://github.com/dosemu2/dosemu2/issues
+Ask for help in: https://github.com/dosemu2/dosemu2/discussions
+This program comes with ABSOLUTELY NO WARRANTY.
+This is free software, GPL v2 (or any later version) distribution conditions.
+
+FDPP kernel 1.7 [GIT: ] (compiled Mar 13 2026)
+Kernel compatibility 7.10 - clang - FAT32 support
+
+Written by @stsp, F[23;1H[11;20HDPP project.
+Based on FreeDOS sources (C) Pasquale J. Villani and The FreeDOS Project.
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+C: HD1, Pri[ 1], CHS=    0-1-1, start=[5C0 MB, size=  2000 MB
+D: HD2, Pri[ 1], CHS=    0-1-1, start=[5C0 MB, size=  2000 MB
+E: HD3, Pri[ 1], CHS=    0-1-1, start=[5C0 MB, size=  2000 MB
+F: HD4, Pri[ 1], CHS=    0-1-1, start=[5C0 MB, size=  2000 MB
+[25;80H[1;22r[1;1H[1M[1;24r[22;1Hdosemu XMS 3.0 & UMB support enabled
+dosemu EMS driver rev 0.9 installed.
+EMUFS host file and print access available[25;80H]2;COMMAND - dosemu2[1;24r[1;1H[2M[1;24r[23;1Hdosemu CDROM driver installed (V0.2)
+Process 0 starting: E:\command.com /e:512 /k %FDPP_AUTOEXEC% /M2[25;80H[2;24r[2;1H[3M[1;24r[1;1H[K[23;1HFreeDOS userspace tools can be installed with: insfdusr[25;80H[1;24r[1;1H[2M[1;24r[23;1HBLASTER=A220 I5 D1 H5 P300 T6
+MIDI=SYNTH:2 MAP:E MODE:0[25;80H[1;24r[1;1H[2M[1;24r[23;1HWelcome to dosemu2![24;5HBuild 2.0pre9[25;80H]2;QBASIC - dosemu2[24;1H[1;24r[1;1H[1M[1;24r[24;1H[1;1H[30m[47m   File  Edit  View  Search  Run  Debug  Options                          Help[K
+[37m[44m┌────────────────────────────────[34m[47m RUNFILE.BAS [37m[44m─────────────────────────────┤[34m[47m↑[37m[44m├─┐[3;1H│                                                                              [30m[47m↑[4;1H[37m[44m│                                                                              
+│                                                                              [30m[47m░[6;1H[37m[44m│                                                                              [30m[47m░[7;1H[37m[44m│                                                                              [30m[47m░[8;1H[37m[44m│                                                                              [30m[47m░[9;1H[37m[44m│                                                                              [30m[47m░[10;1H[37m[44m│                                                                              [30m[47m░[11;1H[37m[44m│                                                                              [30m[47m░[12;1H[37m[44m│                                                                              [30m[47m░[13;1H[37m[44m│                                                                              [30m[47m░[14;1H[37m[44m│                                                                              [30m[47m░[15;1H[37m[44m│                                                                              [30m[47m░[16;1H[37m[44m│                                                                              [30m[47m░[17;1H[37m[44m│                                                                              [30m[47m░[18;1H[37m[44m│                                                                              [30m[47m░[19;1H[37m[44m│                                                                              [30m[47m░[20;1H[37m[44m│                                                                              [30m[47m↓[21;1H[37m[44m│[30m[47m←[37m[40m [30m[47m░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░→[37m[44m│[22;1H├───────────────────────────────── Immediate ──────────────────────────────────┤[23;1H│                                                                              │[24;1H│                                                                              │[24;79H│[4h [4l[1;1H[40mBased on FreeDOS sources (C) Pasquale J. Villani and The FreeDOS Project.[K
+[K
+This program is free software: you can redistribute it and/or modify[K
+it under the terms of the GNU General Public License as published by[K
+the Free Software Foundation, either version 3 of the License, or[K
+(at your option) any later version.[K
+[K
+C: HD1, Pri[ 1], CHS=    0-1-1, start=     0 MB, size=  2000 MB[K
+D: HD2, Pri[ 1], CHS=    0-1-1, start=     0 MB, size=  2000 MB[K
+E: HD3, Pri[ 1], CHS=    0-1-1, start=     0 MB, size=  2000 MB[K
+F: HD4, Pri[ 1], CHS=    0-1-1, start=     0 MB, size=  2000 MB[K
+dosemu XMS 3.0 & UMB support enabled[K
+dosemu EMS driver rev 0.9 installed.[K
+EMUFS host file and print access available[K
+dosemu CDROM driver installed (V0.2)[K
+Process 0 starting: E:\command.com /e:512 /k %FDPP_AUTOEXEC% /M2[K
+[K
+FreeDOS userspace tools can be installed with: insfdusr[K
+[K
+BLASTER=A220 I5 D1 H5 P300 T6[K
+MIDI=SYNTH:2 MAP:E MODE:0[K
+Welcome to dosemu2![K
+    Build 2.0pre9[K
+[K[3;2H[1;1H[30m[47m   File  Edit  View  Search  Run  Debug  Options                          Help[K
+[37m[44m┌────────────────────────────────[34m[47m RUNFILE.BAS [37m[44m─────────────────────────────┤[34m[47m↑[37m[44m├─┐[3;1H│10 FOR Y = -12 TO 12                                                          [30m[47m↑[4;1H[37m[44m│20 FOR X = -39 TO 39                                                          
+│30 CA = X * .0458                                                             [30m[47m░[6;1H[37m[44m│40 CB = Y * .08333                                                            [30m[47m░[7;1H[37m[44m│50 A = CA                                                                     [30m[47m░[8;1H[37m[44m│60 B = CB                                                                     [30m[47m░[9;1H[37m[44m│70 FOR I = 0 TO 15                                                            [30m[47m░[10;1H[37m[44m│80 T = A * A - B * B + CA                                                     [30m[47m░[11;1H[37m[44m│90 B = 2 * A * B + CB                                                         [30m[47m░[12;1H[37m[44m│100 A = T                                                                     [30m[47m░[13;1H[37m[44m│110 IF (A * A + B * B) > 4 THEN GOTO 200                                      [30m[47m░[14;1H[37m[44m│120 NEXT I                                                                    [30m[47m░[15;1H[37m[44m│130 PRINT " ";                                                                [30m[47m░[16;1H[37m[44m│140 GOTO 210                                                                  [30m[47m░[17;1H[37m[44m│200 IF I > 9 THEN I = I + 7                                                   [30m[47m░[18;1H[37m[44m│205 PRINT CHR$(48 + I);                                                       [30m[47m░[19;1H[37m[44m│210 NEXT X                                                                    [30m[47m░[20;1H[37m[44m│220 PRINT                                                                     [30m[47m↓[21;1H[37m[44m│[30m[47m←[37m[40m [30m[47m░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░→[37m[44m│[22;1H├───────────────────────────────── Immediate ──────────────────────────────────┤[23;1H│                                                                              │[24;1H│                                                                              │[24;79H│[4h [4l[3;2H000000011111111111111111122222233347E7AB322222111100000000000000000000000000000
+000001111111111111111122222222333557BF75433222211111000000000000000000000000000
+000111111111111111112222222233445C 643332222111110000000000000000000000000
+011111111111111111222222233444556C 654433332211111100000000000000000000000
+11111111111111112222233346 D978 BCF DF9 6556F4221111110000000000000000000000
+111111111111122223333334469 D 6322111111000000000000000000000
+1111111111222333333334457DB 85332111111100000000000000000000
+11111122234B744444455556A 96532211111110000000000000000000
+122222233347BAA7AB776679 A32211111110000000000000000000
+2222233334567 9A A532221111111000000000000000000
+222333346679 9432221111111000000000000000000
+234445568 F B5432221111111000000000000000000
+864332221111111000000000000000000
+234445568 F B5432221111111000000000000000000
+222333346679 9432221111111000000000000000000
+2222233334567 9A A532221111111000000000000000000
+122222233347BAA7AB776679 A32211111110000000000000000000
+11111122234B744444455556A 96532211111110000000000000000000
+1111111111222333333334457DB 85332111111100000000000000000000
+111111111111122223333334469 D 6322111111000000000000000000000
+11111111111111112222233346 D978 BCF DF9 6556F4221111110000000000000000000000
+011111111111111111222222233444556C 654433332211111100000000000000000000000
+000111111111111111112222222233445C 643332222111110000000000000000000000000
+000001111111111111111122222222333557BF75433222211111000000000000000000000000000
+000000011111111111111111122222233347E7AB322222111100000000000000000000000000000

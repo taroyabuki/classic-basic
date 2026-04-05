@@ -56,6 +56,8 @@ class Z80CPU:
         self.interrupt_mode = 0
         self.i = 0
         self.r = 0
+        self.ix = 0
+        self.iy = 0
         self.trace = False
 
     @property
@@ -90,6 +92,9 @@ class Z80CPU:
         self.pc = (self.pc + 1) & 0xFFFF
         return value
 
+    def _notify_port_write(self, origin_pc: int) -> None:
+        pass  # Subclasses (e.g. PC8801CPU) may override for port logging
+
     def read_next_word(self) -> int:
         low = self.read_next_byte()
         high = self.read_next_byte()
@@ -111,8 +116,6 @@ class Z80CPU:
     def step(self) -> None:
         if self.trace:
             self._trace_state()
-        if hasattr(self.memory, "set_current_pc"):
-            self.memory.set_current_pc(self.pc)
         opcode = self.read_next_byte()
 
         if opcode == 0x00:
@@ -459,8 +462,7 @@ class Z80CPU:
             return
         if opcode == 0xD3:
             port = self.read_next_byte()
-            if hasattr(self.ports, "set_current_pc"):
-                self.ports.set_current_pc((self.pc - 2) & 0xFFFF)
+            self._notify_port_write((self.pc - 2) & 0xFFFF)
             self.ports.write_port(port, self.a)
             return
         if opcode == 0xD4:
@@ -495,8 +497,7 @@ class Z80CPU:
             return
         if opcode == 0xDB:
             port = self.read_next_byte()
-            if hasattr(self.ports, "set_current_pc"):
-                self.ports.set_current_pc((self.pc - 2) & 0xFFFF)
+            self._notify_port_write((self.pc - 2) & 0xFFFF)
             self.a = self.ports.read_port(port)
             self.zero = self.a == 0
             return
@@ -643,6 +644,12 @@ class Z80CPU:
                 self.push_word(self.pc)
                 self.pc = destination
             return
+        if opcode == 0xDD:
+            self._step_xp(is_iy=False)
+            return
+        if opcode == 0xFD:
+            self._step_xp(is_iy=True)
+            return
 
         raise UnsupportedInstruction(
             f"unsupported opcode 0x{opcode:02X} at 0x{(self.pc - 1) & 0xFFFF:04X}"
@@ -650,9 +657,10 @@ class Z80CPU:
 
     @staticmethod
     def decode_instruction(memory: Memory, pc: int) -> str:
-        opcode = memory.read_byte(pc)
-        byte1 = memory.read_byte((pc + 1) & 0xFFFF)
-        byte2 = memory.read_byte((pc + 2) & 0xFFFF)
+        reader = memory.read_byte
+        opcode = reader(pc)
+        byte1 = reader((pc + 1) & 0xFFFF)
+        byte2 = reader((pc + 2) & 0xFFFF)
         word = byte1 | (byte2 << 8)
 
         if opcode == 0x00:
@@ -1075,6 +1083,167 @@ class Z80CPU:
             f"unsupported CB opcode 0x{opcode:02X} at 0x{(self.pc - 2) & 0xFFFF:04X}"
         )
 
+    def _step_xp(self, is_iy: bool) -> None:
+        """Handle DD (IX) and FD (IY) prefix instructions."""
+        xp = self.iy if is_iy else self.ix
+        opcode = self.read_next_byte()
+
+        def xp_disp() -> int:
+            d = self.read_next_byte()
+            return d - 256 if d >= 128 else d
+
+        def set_xp(val: int) -> None:
+            val &= 0xFFFF
+            if is_iy:
+                self.iy = val
+            else:
+                self.ix = val
+
+        def read_xp_d() -> int:
+            return self.memory.read_byte((xp + xp_disp()) & 0xFFFF)
+
+        def write_xp_d(d: int, val: int) -> None:
+            self.memory.write_byte((xp + d) & 0xFFFF, val & 0xFF)
+
+        if opcode == 0x21:
+            set_xp(self.read_next_word())
+        elif opcode == 0x22:
+            self.memory.write_word(self.read_next_word(), xp)
+        elif opcode == 0x2A:
+            set_xp(self.memory.read_word(self.read_next_word()))
+        elif opcode == 0x23:
+            set_xp(xp + 1)
+        elif opcode == 0x2B:
+            set_xp(xp - 1)
+        elif opcode == 0x09:
+            total = xp + self.bc; self.carry = total > 0xFFFF; set_xp(total)
+        elif opcode == 0x19:
+            total = xp + self.de; self.carry = total > 0xFFFF; set_xp(total)
+        elif opcode == 0x29:
+            total = xp + xp; self.carry = total > 0xFFFF; set_xp(total)
+        elif opcode == 0x39:
+            total = xp + self.sp; self.carry = total > 0xFFFF; set_xp(total)
+        elif opcode == 0xE1:
+            set_xp(self.pop_word())
+        elif opcode == 0xE5:
+            self.push_word(xp)
+        elif opcode == 0xE3:
+            tmp = self.memory.read_word(self.sp)
+            self.memory.write_word(self.sp, xp)
+            set_xp(tmp)
+        elif opcode == 0xE9:
+            self.pc = xp
+        elif opcode == 0xF9:
+            self.sp = xp
+        elif opcode == 0x34:
+            d = xp_disp(); addr = (xp + d) & 0xFFFF
+            self.memory.write_byte(addr, self._inc8(self.memory.read_byte(addr)))
+        elif opcode == 0x35:
+            d = xp_disp(); addr = (xp + d) & 0xFFFF
+            self.memory.write_byte(addr, self._dec8(self.memory.read_byte(addr)))
+        elif opcode == 0x36:
+            d = xp_disp(); n = self.read_next_byte()
+            self.memory.write_byte((xp + d) & 0xFFFF, n)
+        elif opcode == 0x46:
+            self.b = read_xp_d()
+        elif opcode == 0x4E:
+            self.c = read_xp_d()
+        elif opcode == 0x56:
+            self.d = read_xp_d()
+        elif opcode == 0x5E:
+            self.e = read_xp_d()
+        elif opcode == 0x66:
+            self.h = read_xp_d()
+        elif opcode == 0x6E:
+            self.l = read_xp_d()
+        elif opcode == 0x7E:
+            self.a = read_xp_d()
+        elif opcode == 0x70:
+            d = xp_disp(); write_xp_d(d, self.b)
+        elif opcode == 0x71:
+            d = xp_disp(); write_xp_d(d, self.c)
+        elif opcode == 0x72:
+            d = xp_disp(); write_xp_d(d, self.d)
+        elif opcode == 0x73:
+            d = xp_disp(); write_xp_d(d, self.e)
+        elif opcode == 0x74:
+            d = xp_disp(); write_xp_d(d, self.h)
+        elif opcode == 0x75:
+            d = xp_disp(); write_xp_d(d, self.l)
+        elif opcode == 0x77:
+            d = xp_disp(); write_xp_d(d, self.a)
+        elif opcode == 0x86:
+            self.a = self._add8(self.a, read_xp_d())
+        elif opcode == 0x8E:
+            self.a = self._add8(self.a, read_xp_d(), carry_in=1 if self.carry else 0)
+        elif opcode == 0x96:
+            self.a = self._sub8(self.a, read_xp_d())
+        elif opcode == 0x9E:
+            self.a = self._sub8(self.a, read_xp_d(), carry_in=1 if self.carry else 0)
+        elif opcode == 0xA6:
+            self.a &= read_xp_d(); self._set_logic_flags(self.a)
+        elif opcode == 0xAE:
+            self.a ^= read_xp_d(); self._set_logic_flags(self.a)
+        elif opcode == 0xB6:
+            self.a |= read_xp_d(); self._set_logic_flags(self.a)
+        elif opcode == 0xBE:
+            v = read_xp_d()
+            self.zero = self.a == v; self.carry = self.a < v
+            self.sign = ((self.a - v) & 0x80) != 0
+        elif opcode == 0xCB:
+            # DDCB / FDCB: bit operations on (IX+d)/(IY+d)
+            d = xp_disp()
+            addr = (xp + d) & 0xFFFF
+            cb_op = self.read_next_byte()
+            bit = (cb_op >> 3) & 0x07
+            if 0x46 <= cb_op <= 0x7E and cb_op & 0x07 == 0x06:
+                # BIT b,(IX+d)
+                self.zero = not bool(self.memory.read_byte(addr) & (1 << bit))
+                self.parity_even = self.zero
+            elif 0x86 <= cb_op <= 0xBE and cb_op & 0x07 == 0x06:
+                # RES b,(IX+d)
+                self.memory.write_byte(addr, self.memory.read_byte(addr) & ~(1 << bit) & 0xFF)
+            elif 0xC6 <= cb_op <= 0xFE and cb_op & 0x07 == 0x06:
+                # SET b,(IX+d)
+                self.memory.write_byte(addr, self.memory.read_byte(addr) | (1 << bit))
+            elif cb_op == 0x06:
+                # RLC (IX+d)
+                v = self.memory.read_byte(addr)
+                self.carry = bool(v & 0x80); v = ((v << 1) | (1 if self.carry else 0)) & 0xFF
+                self.memory.write_byte(addr, v)
+            elif cb_op == 0x0E:
+                # RRC (IX+d)
+                v = self.memory.read_byte(addr)
+                self.carry = bool(v & 0x01); v = ((v >> 1) | (0x80 if self.carry else 0)) & 0xFF
+                self.memory.write_byte(addr, v)
+            elif cb_op == 0x16:
+                # RL (IX+d)
+                v = self.memory.read_byte(addr); cin = 1 if self.carry else 0
+                self.carry = bool(v & 0x80); v = ((v << 1) | cin) & 0xFF
+                self.memory.write_byte(addr, v)
+            elif cb_op == 0x1E:
+                # RR (IX+d)
+                v = self.memory.read_byte(addr); cin = 0x80 if self.carry else 0
+                self.carry = bool(v & 0x01); v = ((v >> 1) | cin) & 0xFF
+                self.memory.write_byte(addr, v)
+            elif cb_op == 0x26:
+                # SLA (IX+d)
+                v = self.memory.read_byte(addr)
+                self.carry = bool(v & 0x80); v = (v << 1) & 0xFF
+                self.memory.write_byte(addr, v)
+            elif cb_op == 0x2E:
+                # SRA (IX+d)
+                v = self.memory.read_byte(addr)
+                self.carry = bool(v & 0x01); v = ((v >> 1) | (v & 0x80)) & 0xFF
+                self.memory.write_byte(addr, v)
+            elif cb_op == 0x3E:
+                # SRL (IX+d)
+                v = self.memory.read_byte(addr)
+                self.carry = bool(v & 0x01); v = (v >> 1) & 0xFF
+                self.memory.write_byte(addr, v)
+            # Other CB variants treated as NOP
+        # Unknown DD/FD opcode: treat as NOP (skip the second byte already consumed)
+
     def _step_ed(self) -> None:
         opcode = self.read_next_byte()
         if opcode in (0x46, 0x4E, 0x66, 0x6E):
@@ -1105,21 +1274,43 @@ class Z80CPU:
             self.sign = bool(self.a & 0x80)
             return
         if opcode in (0x40, 0x48, 0x50, 0x58, 0x60, 0x68, 0x78):
-            if hasattr(self.ports, "set_current_pc"):
-                self.ports.set_current_pc((self.pc - 2) & 0xFFFF)
+            self._notify_port_write((self.pc - 2) & 0xFFFF)
             value = self.ports.read_port(self.c)
             self._write_reg((opcode >> 3) & 0x07, value)
             self.zero = value == 0
             self.parity_even = self._even_parity(value)
             return
         if opcode in (0x41, 0x49, 0x51, 0x59, 0x61, 0x69, 0x79):
-            if hasattr(self.ports, "set_current_pc"):
-                self.ports.set_current_pc((self.pc - 2) & 0xFFFF)
+            self._notify_port_write((self.pc - 2) & 0xFFFF)
             self.ports.write_port(self.c, self._read_reg((opcode >> 3) & 0x07))
             return
-        if opcode == 0x44:
+        if opcode in (0x44, 0x4C, 0x54, 0x5C, 0x64, 0x6C, 0x74, 0x7C):
+            # NEG (all mirror opcodes)
+            self.carry = self.a != 0
             self.a = (-self.a) & 0xFF
             self.zero = self.a == 0
+            self.sign = bool(self.a & 0x80)
+            self.parity_even = self.a == 0x80
+            return
+        if opcode in (0x42, 0x52, 0x62, 0x72):
+            # SBC HL,rr
+            reg_pairs = [self.bc, self.de, self.hl, self.sp]
+            rr = reg_pairs[(opcode - 0x42) >> 4]
+            total = self.hl - rr - (1 if self.carry else 0)
+            self.carry = total < 0
+            self.hl = total & 0xFFFF
+            self.zero = self.hl == 0
+            self.sign = bool(self.hl & 0x8000)
+            return
+        if opcode in (0x4A, 0x5A, 0x6A, 0x7A):
+            # ADC HL,rr
+            reg_pairs = [self.bc, self.de, self.hl, self.sp]
+            rr = reg_pairs[(opcode - 0x4A) >> 4]
+            total = self.hl + rr + (1 if self.carry else 0)
+            self.carry = total > 0xFFFF
+            self.hl = total & 0xFFFF
+            self.zero = self.hl == 0
+            self.sign = bool(self.hl & 0x8000)
             return
         if opcode == 0x43:
             self.memory.write_word(self.read_next_word(), self.bc)
@@ -1162,9 +1353,8 @@ class Z80CPU:
             while self.bc != 0:
                 self._ldd()
             return
-        raise UnsupportedInstruction(
-            f"unsupported ED opcode 0x{opcode:02X} at 0x{(self.pc - 2) & 0xFFFF:04X}"
-        )
+        # Undefined ED opcode — on real Z80, these are effectively NOP
+        pass
 
     @staticmethod
     def _decode_relative(pc: int, value: int) -> str:

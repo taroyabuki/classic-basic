@@ -1,6 +1,111 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+run_as_root() {
+  if [[ "${EUID}" == "0" ]]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    return 1
+  fi
+}
+
+apt_package_has_candidate() {
+  local package="$1"
+  local apt_output
+  apt_output="$(apt-cache policy "${package}" 2>/dev/null || true)"
+  [[ -n "${apt_output}" ]] || return 1
+  grep -Eq 'Candidate:[[:space:]]*\(none\)$' <<<"${apt_output}" && return 1
+  grep -Eq 'Candidate:[[:space:]]*[^[:space:]]+' <<<"${apt_output}"
+}
+
+os_release_value() {
+  local key="$1"
+  local value
+  value="$(
+    KEY="${key}" python3 - <<'PY2'
+import os
+
+key = os.environ["KEY"]
+data = {}
+with open("/etc/os-release", "r", encoding="utf-8") as fh:
+    for raw_line in fh:
+        line = raw_line.strip()
+        if not line or "=" not in line:
+            continue
+        name, raw_value = line.split("=", 1)
+        data[name] = raw_value.strip().strip('"')
+print(data.get(key, ""))
+PY2
+  )"
+  printf '%s
+' "${value}"
+}
+
+try_install_apt_package() {
+  local package
+  for package in "$@"; do
+    if ! apt_package_has_candidate "${package}"; then
+      continue
+    fi
+    if run_as_root apt-get install -y "${package}"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+dosemu_available() {
+  dosemu_command >/dev/null 2>&1
+}
+
+install_dosemu_via_ubuntu_ppa() {
+  local distro_id
+  distro_id="$(os_release_value ID)"
+  [[ "${distro_id}" == "ubuntu" ]] || return 1
+
+  run_as_root apt-get install -y software-properties-common
+  if ! grep -Rqs '^deb .*ppa.launchpadcontent.net/dosemu2/ppa/ubuntu' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
+    run_as_root add-apt-repository -y ppa:dosemu2/ppa
+    run_as_root apt-get update
+  fi
+
+  run_as_root apt-get install -y dosemu2
+}
+
+ensure_command_with_apt() {
+  local command_name="$1"
+  shift
+  command -v "${command_name}" >/dev/null 2>&1 && return 0
+  command -v apt-get >/dev/null 2>&1 || return 1
+
+  export DEBIAN_FRONTEND=noninteractive
+  if [[ -z "${CLASSIC_BASIC_APT_UPDATED:-}" ]]; then
+    run_as_root apt-get update
+    CLASSIC_BASIC_APT_UPDATED=1
+    export CLASSIC_BASIC_APT_UPDATED
+  fi
+
+  try_install_apt_package "$@" || return 1
+  command -v "${command_name}" >/dev/null 2>&1
+}
+
+ensure_dosemu_with_apt() {
+  dosemu_available && return 0
+  command -v apt-get >/dev/null 2>&1 || return 1
+
+  export DEBIAN_FRONTEND=noninteractive
+  if [[ -z "${CLASSIC_BASIC_APT_UPDATED:-}" ]]; then
+    run_as_root apt-get update
+    CLASSIC_BASIC_APT_UPDATED=1
+    export CLASSIC_BASIC_APT_UPDATED
+  fi
+
+  try_install_apt_package dosemu2 dosemu || install_dosemu_via_ubuntu_ppa || return 1
+  dosemu_available
+}
+
 canonical_basic_filename() {
   local source_path="$1"
 

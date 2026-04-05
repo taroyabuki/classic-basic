@@ -21,10 +21,11 @@ What it does:
 
 Notes:
   - The default DOS command is QBASIC
-  - In this wrapper, typing SYSTEM exits back out of dosemu2
-  - PROGRAM.bas is assumed to be ASCII and may use either LF or CRLF line endings
-  - With --file PROGRAM.bas, this wrapper loads it into the QBasic IDE and stays interactive
+  - Interactive mode exits on Ctrl-D; the wrapper closes QBasic for you
+  - PROGRAM.bas is assumed to be ASCII and may use LF, CRLF, or CR line endings
+  - With --file PROGRAM.bas, this wrapper loads it into the QBasic IDE and stays interactive so you can type RUN
   - With --run --file PROGRAM.bas, this wrapper runs it with `/RUN`, redirects output to a DOS file, and exits after collecting it
+  - In --run mode, INPUT, LINE INPUT, INPUT$, and INKEY$ are rejected before execution
   - Use --timeout only when you want to cap file-run wall time; default is unlimited
 EOF
 }
@@ -102,6 +103,7 @@ prepare_qbasic_runtime "${archive_path}" "${exe_path}" "${runtime_dir}" "${home_
 if [[ -n "${file_path}" ]]; then
   staged_program="$(stage_qbasic_program "${file_path}" "${runtime_dir}")"
   if [[ -n "${run_program}" ]]; then
+    python3 "${ROOT_DIR}/src/qbasic_program_check.py" "${runtime_dir}/drive_c/${staged_program}"
     if [[ -n "${timeout_spec}" ]]; then
       CLASSIC_BASIC_DOSEMU_BATCH_TIMEOUT="${timeout_spec}" run_qbasic_file "${runtime_dir}" "${home_dir}" "${staged_program}"
     else

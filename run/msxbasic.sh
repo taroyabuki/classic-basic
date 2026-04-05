@@ -18,8 +18,8 @@ Usage:
 
 What it does:
   - With no --file, start MSX-BASIC interactively.
-  - With --file PROGRAM.bas, type the file into memory and stay interactive.
-  - With --run --file PROGRAM.bas, run the file in batch mode and print the output.
+  - With --file PROGRAM.bas, type the file into memory and stay interactive with Ok ready for RUN.
+  - With --run --file PROGRAM.bas, load via the interactive path, RUN it, print the output, and exit.
   - Use --timeout only when you want to cap file-run wall time; default is unlimited.
 EOF
 }
@@ -79,9 +79,9 @@ export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 if [[ -n "${file_path}" ]]; then
   if [[ "${run_program}" == "1" ]]; then
     if [[ -n "${timeout_spec}" ]]; then
-      exec env CLASSIC_BASIC_MSX_BATCH_TIMEOUT="${timeout_spec}" python3 -m msx_basic.cli "${args[@]}" "${file_path}"
+      exec env CLASSIC_BASIC_MSX_BATCH_TIMEOUT="${timeout_spec}" python3 -m msx_basic.cli "${args[@]}" --run-loaded "${file_path}"
     fi
-    exec python3 -m msx_basic.cli "${args[@]}" "${file_path}"
+    exec python3 -m msx_basic.cli "${args[@]}" --run-loaded "${file_path}"
   fi
   exec python3 -m msx_basic.cli "${args[@]}" --interactive "${file_path}"
 fi

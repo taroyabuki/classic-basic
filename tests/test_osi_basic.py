@@ -1,14 +1,48 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from z80_basic.osi_basic import OsiBasicMachine, build_staged_input
+from z80_basic import osi_basic
+from z80_basic.osi_basic import OsiBasicMachine, build_staged_input, load_basic_program
 from z80_basic.terminal import BufferedConsole
 
 
 class OsiBasicTests(unittest.TestCase):
+    def test_batch_mode_does_not_open_raw_terminal_even_when_stdin_is_a_tty(self) -> None:
+        class FakeMachine:
+            def run(self, console, max_steps: int = 5_000_000):
+                console.write_byte(ord("O"))
+                console.write_byte(ord("K"))
+                return osi_basic.OsiBasicResult(reason="eof", steps=1, pc=0)
+
+        fake_stdin = io.TextIOWrapper(io.BytesIO(b""), encoding="ascii")
+        writes: list[bytes] = []
+
+        with patch.object(osi_basic, "OsiBasicMachine", return_value=FakeMachine()), \
+             patch.object(osi_basic, "RawTerminal", side_effect=AssertionError("RawTerminal should not be used")), \
+             patch.object(osi_basic.sys, "stdin", fake_stdin), \
+             patch.object(osi_basic.os, "write", side_effect=lambda fd, data: writes.append(data) or len(data)):
+            with patch.object(osi_basic.sys.stdin, "isatty", return_value=True):
+                exit_code = osi_basic.main(["--exec", "PRINT 2+2"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(b"".join(writes), b"OK")
+
+    def test_interactive_mode_requires_a_tty(self) -> None:
+        fake_stdin = io.TextIOWrapper(io.BytesIO(b""), encoding="ascii")
+
+        with patch.object(osi_basic.sys, "stdin", fake_stdin):
+            with patch.object(osi_basic.sys.stdin, "isatty", return_value=False):
+                with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                    exit_code = osi_basic.main(["--interactive"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("--interactive requires a TTY", stderr.getvalue())
+
     def test_boots_and_runs_direct_mode_expression(self) -> None:
         machine = OsiBasicMachine()
         console = BufferedConsole(
@@ -37,3 +71,29 @@ class OsiBasicTests(unittest.TestCase):
         self.assertEqual(result.reason, "eof")
         self.assertIn("RUN", console.output_text)
         self.assertIn(" 4 ", console.output_text)
+
+    def test_file_mode_loads_program_without_autorun_when_run_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            program_path = Path(tmp) / "demo.bas"
+            program_path.write_text("10 PRINT 2+2\n20 END\n", encoding="ascii")
+
+            staged_input = build_staged_input(program_path=program_path, exec_text=None, run=False)
+
+        self.assertIn(b"10 PRINT 2+2\r20 END\r", staged_input)
+        self.assertNotIn(b"RUN\r", staged_input)
+
+    def test_load_basic_program_accepts_lf_crlf_and_cr_line_endings(self) -> None:
+        cases = {
+            "lf.bas": b"10 PRINT 1\n20 END\n",
+            "crlf.bas": b"10 PRINT 1\r\n20 END\r\n",
+            "cr.bas": b"10 PRINT 1\r20 END\r",
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            for name, source in cases.items():
+                program_path = temp_dir / name
+                program_path.write_bytes(source)
+
+                with self.subTest(path=name):
+                    self.assertEqual(load_basic_program(program_path), b"10 PRINT 1\r20 END\r")

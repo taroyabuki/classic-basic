@@ -155,13 +155,13 @@ prepare_runtime() {
     rm -f "${runtime_dir}/AUTOEXEC.TXT"
   fi
 
-  echo "Prepared RunCPM runtime at ${runtime_dir}"
-  echo "Drive A user 0: ${runtime_dir}/A/0"
+  echo "Prepared RunCPM runtime at ${runtime_dir}" >&2
+  echo "Drive A user 0: ${runtime_dir}/A/0" >&2
   if [[ -n "${copied_program}" ]]; then
-    echo "Copied program: ${copied_program}"
+    echo "Copied program: ${copied_program}" >&2
   fi
   if [[ -n "${autoexec_command}" ]]; then
-    echo "AUTOEXEC: ${autoexec_command}"
+    echo "AUTOEXEC: ${autoexec_command}" >&2
   fi
 }
 

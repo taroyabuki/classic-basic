@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from z80_basic.cpu import PortDevice, Z80CPU
+from z80_basic.cpu import ExecutionResult, PortDevice, Z80CPU
 from z80_basic.memory import Memory
 
 from pc8001_terminal.display import TextGeometry, TextScreen
 from pc8001_terminal.cli import DEFAULT_ROM_PATH, _decode_key_sequence
-from pc8001_terminal.machine import PC8001Config, PC8001Machine, RomSpec, _compile_n80_basic_program
+from pc8001_terminal.machine import (
+    InputRequestError,
+    PC8001Config,
+    PC8001Machine,
+    RomSpec,
+    _compile_n80_basic_program,
+    _filter_nbasic_batch_output,
+)
 from pc8001_terminal.memory import PC8001Memory
 from pc8001_terminal.ports import (
     ALT_SYSTEM_COMMAND_PORT,
@@ -89,6 +98,50 @@ class PC8001MemoryTests(unittest.TestCase):
 
 
 class PC8001MachineTests(unittest.TestCase):
+    def _rom_tokenized_body(self, line: str) -> bytes:
+        if not DEFAULT_ROM_PATH.is_file():
+            self.skipTest(f"ROM not available: {DEFAULT_ROM_PATH}")
+
+        machine = PC8001Machine(
+            PC8001Config(
+                roms=(RomSpec(path=DEFAULT_ROM_PATH, start=0x0000, name=DEFAULT_ROM_PATH.name),),
+                entry_point=0x0000,
+                max_steps=300000,
+                batch_rounds=64,
+            )
+        )
+        machine.load_roms()
+        machine.boot_demo()
+        machine.inject_keys([ord(char) for char in line] + [0x0D])
+        for _ in range(16):
+            result = machine.run_firmware(max_steps=300000)
+            if result.reason != "step_limit":
+                break
+
+        addr = 0x8021 + 4
+        body = bytearray()
+        while True:
+            value = machine.memory.read_byte(addr)
+            if value == 0x00:
+                break
+            body.append(value)
+            addr += 1
+        return bytes(body)
+
+    @staticmethod
+    def _non_ascii_tokens(body: bytes) -> bytes:
+        tokens = bytearray()
+        index = 0
+        while index < len(body):
+            value = body[index]
+            if value >= 0x80:
+                tokens.append(value)
+                if value == 0xFF and index + 1 < len(body):
+                    index += 1
+                    tokens.append(body[index])
+            index += 1
+        return bytes(tokens)
+
     def test_demo_boot_writes_banner(self) -> None:
         machine = PC8001Machine(PC8001Config(rows=5, cols=40))
         machine.load_roms()
@@ -116,12 +169,50 @@ class PC8001MachineTests(unittest.TestCase):
         self.assertEqual(PC8001Config().cols, 40)
         self.assertEqual(PC8001Config().rows, 20)
 
+    def test_run_host_basic_until_settled_streams_non_tty_batch_output(self) -> None:
+        class FakeStdout(io.StringIO):
+            def __init__(self) -> None:
+                super().__init__()
+                self.flush_calls = 0
+
+            def isatty(self) -> bool:
+                return False
+
+            def flush(self) -> None:
+                self.flush_calls += 1
+
+        machine = PC8001Machine(
+            PC8001Config(
+                roms=(RomSpec(path=Path("/tmp/pc8001-rom.bin"), start=0x0000, name="rom.bin"),),
+                entry_point=0x0000,
+                startup_program=Path("/tmp/prog.bas"),
+            )
+        )
+        results = [
+            ExecutionResult(reason="step_limit", steps=1, pc=0x0000),
+            ExecutionResult(reason="input_wait", steps=1, pc=0x0000),
+        ]
+        outputs = ["HELLO\n", "WORLD\n"]
+
+        def fake_run_firmware(*, max_steps: int) -> ExecutionResult:
+            del max_steps
+            machine.console_output.extend(outputs.pop(0))
+            return results.pop(0)
+
+        machine.run_firmware = fake_run_firmware  # type: ignore[method-assign]
+        fake_stdout = FakeStdout()
+        with patch("sys.stdout", fake_stdout):
+            machine._run_host_basic_until_settled(max_rounds=4)
+
+        self.assertEqual(fake_stdout.getvalue(), "HELLO\nWORLD\n")
+        self.assertEqual(fake_stdout.flush_calls, 2)
+
     def test_decode_key_sequence_supports_escape_sequences(self) -> None:
         self.assertEqual(_decode_key_sequence("A\\r\\x31"), [0x41, 0x0D, 0x31])
 
     def test_load_basic_source_injects_non_empty_lines(self) -> None:
         path = Path("/tmp/pc8001-source.bas")
-        path.write_text("10 PRINT 1\n\n20 END\r\n", encoding="utf-8")
+        path.write_text("10 PRINT 1\n\n20 END\r\n", encoding="ascii")
         machine = PC8001Machine(PC8001Config())
         captured: list[list[int]] = []
 
@@ -138,6 +229,44 @@ class PC8001MachineTests(unittest.TestCase):
                 [ord(char) for char in "10 PRINT 1"] + [0x0D],
                 [ord(char) for char in "20 END"] + [0x0D],
             ],
+        )
+
+    def test_load_basic_source_accepts_crlf_and_cr_newlines(self) -> None:
+        path = Path("/tmp/pc8001-source-cr.bas")
+        path.write_bytes(b"10 PRINT 1\r\n20 END\r30 PRINT 2\n")
+        machine = PC8001Machine(PC8001Config())
+        captured: list[list[int]] = []
+
+        def capture(values: list[int]) -> bool:
+            captured.append(values)
+            return True
+
+        machine.inject_keys = capture  # type: ignore[method-assign]
+        machine.load_basic_source(path)
+
+        self.assertEqual(
+            captured,
+            [
+                [ord(char) for char in "10 PRINT 1"] + [0x0D],
+                [ord(char) for char in "20 END"] + [0x0D],
+                [ord(char) for char in "30 PRINT 2"] + [0x0D],
+            ],
+        )
+
+    def test_load_basic_source_rejects_non_ascii_text(self) -> None:
+        path = Path("/tmp/pc8001-source-nonascii.bas")
+        path.write_text('10 PRINT "あ"\n', encoding="utf-8")
+        machine = PC8001Machine(PC8001Config())
+
+        with self.assertRaisesRegex(ValueError, "ASCII only"):
+            machine.load_basic_source(path)
+
+    def test_filter_nbasic_batch_output_keeps_program_output_only(self) -> None:
+        self.assertEqual(
+            _filter_nbasic_batch_output(
+                "NEC PC-8001 BASIC Ver 1.1\nCopyright 1979 (C) by Microsoft\nOk\nHELLO\nOk\n"
+            ),
+            "HELLO\n",
         )
 
     def test_compile_n80_basic_program_tokenizes_rom_batch_subset(self) -> None:
@@ -186,6 +315,30 @@ class PC8001MachineTests(unittest.TestCase):
         )
         self.assertEqual(compiled[4], (40, bytes([0x49, 0xF1, 0x49, 0xF4, 0x31, 0x3A, 0x89, 0x20, 0x32, 0x31])))
 
+    def test_compile_n80_basic_program_tokenizes_atn_function(self) -> None:
+        compiled = _compile_n80_basic_program("10 A=ATN(1)\n")
+        self.assertEqual(compiled, [(10, bytes([0x41, 0xF1, 0xFF, 0x8E, 0x28, 0x31, 0x29]))])
+
+    def test_compile_n80_basic_program_tokenizes_input_statement(self) -> None:
+        compiled = _compile_n80_basic_program('10 INPUT "N";A\n')
+        self.assertEqual(compiled, [(10, bytes([0x85, 0x20, 0x22, 0x4E, 0x22, 0x3B, 0x41]))])
+
+    def test_compile_n80_basic_program_tokenizes_abs_and_sqr_functions(self) -> None:
+        compiled = _compile_n80_basic_program("10 A=ABS(1)\n20 B=SQR(2)\n")
+        self.assertEqual(compiled[0], (10, bytes([0x41, 0xF1, 0xFF, 0x86, 0x28, 0x31, 0x29])))
+        self.assertEqual(compiled[1], (20, bytes([0x42, 0xF1, 0xFF, 0x87, 0x28, 0x32, 0x29])))
+
+    def test_host_tokenizer_non_ascii_tokens_match_rom_for_intrinsics(self) -> None:
+        for line in (
+            "10 A=ATN(1)",
+            "10 A=ABS(1)",
+            "10 A=SQR(2)",
+            "10 PRINT HEX$(PEEK(VARPTR(A)))",
+        ):
+            compiled = _compile_n80_basic_program(line + "\n")[0][1]
+            rom = self._rom_tokenized_body(line)
+            self.assertEqual(self._non_ascii_tokens(compiled), self._non_ascii_tokens(rom), line)
+
     def test_default_rom_startup_program_runs_tokenized_arithmetic(self) -> None:
         if not DEFAULT_ROM_PATH.is_file():
             self.skipTest(f"ROM not available: {DEFAULT_ROM_PATH}")
@@ -200,9 +353,10 @@ class PC8001MachineTests(unittest.TestCase):
                 max_steps=300000,
             )
         )
-        machine.load_roms()
-        machine.boot_demo()
-        output = machine.consume_console_output()
+        with patch("sys.stdout.isatty", return_value=True):
+            machine.load_roms()
+            machine.boot_demo()
+            output = machine.consume_console_output()
 
         self.assertIn("NEC PC-8001 BASIC Ver 1.1", output)
         self.assertIn(" 4 ", output)
@@ -226,12 +380,36 @@ class PC8001MachineTests(unittest.TestCase):
                 max_steps=800000,
             )
         )
-        machine.load_roms()
-        machine.boot_demo()
-        output = machine.consume_console_output()
+        with patch("sys.stdout.isatty", return_value=True):
+            machine.load_roms()
+            machine.boot_demo()
+            output = machine.consume_console_output()
 
         self.assertIn("3.141592653589793", output)
         self.assertIn("C6", output)
+
+    def test_default_rom_startup_program_runs_tokenized_atn(self) -> None:
+        if not DEFAULT_ROM_PATH.is_file():
+            self.skipTest(f"ROM not available: {DEFAULT_ROM_PATH}")
+
+        path = Path("/tmp/pc8001-rom-atn.bas")
+        path.write_text("10 DEFDBL A-Z\n20 A=4*ATN(1)\n30 PRINT A\n", encoding="ascii")
+        machine = PC8001Machine(
+            PC8001Config(
+                roms=(RomSpec(path=DEFAULT_ROM_PATH, start=0x0000, name=DEFAULT_ROM_PATH.name),),
+                entry_point=0x0000,
+                startup_program=path,
+                max_steps=300000,
+                batch_rounds=64,
+            )
+        )
+        with patch("sys.stdout.isatty", return_value=True):
+            machine.load_roms()
+            machine.boot_demo()
+            output = machine.consume_console_output()
+
+        self.assertIn("3.141592", output)
+        self.assertNotIn("\n 0 \n", output)
 
     def test_rom_entry_point_executes_program(self) -> None:
         path = Path("/tmp/pc8001-prog.bin")
@@ -254,7 +432,7 @@ class PC8001MachineTests(unittest.TestCase):
 
     def test_run_firmware_records_stop_reason(self) -> None:
         path = Path("/tmp/pc8001-unsupported.bin")
-        path.write_bytes(bytes([0xED]))
+        path.write_bytes(bytes([0x27]))  # DAA — not implemented
         machine = PC8001Machine(
             PC8001Config(
                 roms=(RomSpec(path=path, start=0x2000, name="unsupported.bin"),),
@@ -264,9 +442,9 @@ class PC8001MachineTests(unittest.TestCase):
         machine.load_roms()
         result = machine.run_firmware(max_steps=4)
         self.assertEqual(result.reason, "unsupported")
-        self.assertIn("unsupported ED opcode", machine.format_state_summary())
-        self.assertIn("next@0x2000=[ED", machine.format_state_summary())
-        self.assertIn('decoded="DB 0xED,0x00"', machine.format_state_summary())
+        self.assertIn("unsupported opcode 0x27", machine.format_state_summary())
+        self.assertIn("next@0x2000=[27", machine.format_state_summary())
+        self.assertIn('decoded="DB 0x27"', machine.format_state_summary())
         self.assertEqual(machine.format_port_log(), "No port activity recorded")
         self.assertEqual(machine.format_port_summary(), "No port activity recorded")
         self.assertEqual(machine.format_vram_log(), "No VRAM activity recorded")
@@ -349,6 +527,52 @@ class PC8001MachineTests(unittest.TestCase):
         self.assertEqual(machine.memory.read_byte(0xEC96), ord("P"))
         self.assertEqual(machine.memory.read_byte(0xEC97), ord("R"))
         self.assertEqual(machine.memory.read_byte(0xEC9D), 0x00)
+
+    def test_batch_mode_raises_when_program_requests_input(self) -> None:
+        machine = PC8001Machine(
+            PC8001Config(
+                roms=(RomSpec(path=Path("/tmp/pc8001-rom.bin"), start=0x0000, name="rom.bin"),),
+                entry_point=0x0000,
+                startup_program=Path("/tmp/prog.bas"),
+                run_startup=True,
+            )
+        )
+        machine.load_roms = lambda: None  # type: ignore[method-assign]
+
+        def fake_boot_demo() -> None:
+            machine.console_output = list('NEC PC-8001 BASIC Ver 1.1\n"N"? ')
+            machine.console_output_offset = 0
+            machine.last_result = ExecutionResult(reason="input_wait", steps=1, pc=0x1B7E)
+
+        machine.boot_demo = fake_boot_demo  # type: ignore[method-assign]
+
+        with self.assertRaisesRegex(InputRequestError, "interactive program input"):
+            machine.run_terminal()
+
+    def test_batch_mode_returns_zero_after_prompt_reappears(self) -> None:
+        machine = PC8001Machine(
+            PC8001Config(
+                roms=(RomSpec(path=Path("/tmp/pc8001-rom.bin"), start=0x0000, name="rom.bin"),),
+                entry_point=0x0000,
+                startup_program=Path("/tmp/prog.bas"),
+                run_startup=True,
+            )
+        )
+        machine.load_roms = lambda: None  # type: ignore[method-assign]
+
+        def fake_boot_demo() -> None:
+            machine.console_output = list("NEC PC-8001 BASIC Ver 1.1\nOk\n 1 \nOk\n")
+            machine.console_output_offset = 0
+            machine.last_result = ExecutionResult(reason="input_wait", steps=1, pc=0x1B7E)
+
+        machine.boot_demo = fake_boot_demo  # type: ignore[method-assign]
+
+        stdout = io.StringIO()
+        with patch("sys.stdin.isatty", return_value=False), patch("sys.stdout", stdout):
+            rc = machine.run_terminal()
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout.getvalue(), " 1 \n")
 
     def test_defdbl_and_hash_suffix_accepted(self) -> None:
         """N-BASIC: DEFDBL and # type suffix are silently accepted (real hardware behaviour)."""

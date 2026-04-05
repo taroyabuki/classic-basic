@@ -90,6 +90,7 @@ install_debian_packages() {
     make \
     mtools \
     python3 \
+    python3-pil \
     python3-pytest \
     python3-setuptools \
     util-linux
@@ -140,8 +141,14 @@ bash ./setup/6502.sh
 echo "==> setup/basic80.sh"
 bash ./setup/basic80.sh
 
+echo "==> setup/grantsbasic.sh"
+bash ./setup/grantsbasic.sh
+
 echo "==> setup/nbasic.sh"
 bash ./setup/nbasic.sh
+
+echo "==> setup/n88basic.sh"
+bash ./setup/n88basic.sh
 
 echo "==> setup/msxbasic.sh"
 bash ./setup/msxbasic.sh

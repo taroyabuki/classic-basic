@@ -24,6 +24,16 @@ class Memory:
         self._check_address(address)
         return self._data[address]
 
+    def read_fetch_byte(self, address: int) -> int:
+        """Read a byte for instruction fetch.
+
+        Most memory implementations do not distinguish instruction fetches from
+        data reads, so the default behavior is identical to ``read_byte``.
+        Banked machines can override this to expose ROM on fetch while still
+        returning banked RAM for ordinary data reads.
+        """
+        return self.read_byte(address)
+
     def write_byte(self, address: int, value: int) -> None:
         self._check_address(address)
         self._data[address] = value & 0xFF

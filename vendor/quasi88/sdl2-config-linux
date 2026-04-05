@@ -1,0 +1,45 @@
+#!/bin/sh
+
+# Linux sdl2-config wrapper
+
+usage="\
+Usage: $0 [--version] [--cflags] [--libs]"
+
+if test $# -eq 0; then
+      echo "${usage}" 1>&2
+      exit 1
+fi
+
+while test $# -gt 0; do
+  case "$1" in
+  -*=*) optarg=`echo "$1" | sed 's/[-_a-zA-Z0-9]*=//'` ;;
+  *) optarg= ;;
+  esac
+
+  case $1 in
+    --version)
+      echo 2.0.16
+      ;;
+    --cflags)
+      if command -v pkg-config >/dev/null 2>&1; then
+        pkg-config --cflags sdl2
+      fi
+      ;;
+    --libs)
+      if command -v pkg-config >/dev/null 2>&1; then
+        pkg-config --libs sdl2
+      else
+        if [ -e /lib/x86_64-linux-gnu/libSDL2-2.0.so.0 ]; then
+          echo /lib/x86_64-linux-gnu/libSDL2-2.0.so.0
+        elif [ -e /lib/i386-linux-gnu/libSDL2-2.0.so.0 ]; then
+          echo /lib/i386-linux-gnu/libSDL2-2.0.so.0
+        fi
+      fi
+      ;;
+    *)
+      echo "${usage}" 1>&2
+      exit 1
+      ;;
+  esac
+  shift
+done

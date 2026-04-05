@@ -22,10 +22,10 @@ die() {
 }
 
 ensure_qbasic_tools() {
-  dosemu_command >/dev/null 2>&1 || die "dosemu or dosemu2 is not installed"
-  command -v curl >/dev/null 2>&1 || die "curl is required"
-  command -v 7z >/dev/null 2>&1 || die "7z is required"
-  command -v mcopy >/dev/null 2>&1 || die "mtools is required"
+  ensure_dosemu_with_apt || die "dosemu or dosemu2 is not installed"
+  ensure_command_with_apt curl curl || die "curl is required"
+  ensure_command_with_apt 7z p7zip-full 7zip || die "7z is required"
+  ensure_command_with_apt mcopy mtools || die "mtools is required"
 }
 
 download_qbasic_archive() {
@@ -113,14 +113,19 @@ run_qbasic() {
   local home_dir="$2"
   local dos_command="$3"
 
-  # When running interactively (stdin is a TTY), use -kt (keyboard from TTY)
-  # and prefer a clean PTY via 'script'; fall back to 'expect' when nested PTY
-  # allocation is denied by the environment.
+  # QBasic needs wrapper-managed EOF handling so Ctrl-D can close the IDE
+  # cleanly. Use a dedicated PTY bridge that forwards interactive input and
+  # translates EOF into the keyboard sequence needed to exit.
   # When running non-interactively (subprocess/pipe), use -ks (keyboard from stdin)
   # with stdin redirected from /dev/null so dosemu exits cleanly after -E cmd
   # completes without hanging on /dev/tty.
   if [[ -t 0 ]]; then
+    local dosemu_bin
+    local preload
+    dosemu_bin="$(dosemu_command)"
+    preload="$(dosemu_preload_value)"
     local dosemu_args=(
+      "${dosemu_bin}"
       --Flocal_dir "${runtime_dir}"
       --Fdrive_c "${runtime_dir}/drive_c"
       -o "${runtime_dir}/dosemu.log"
@@ -131,7 +136,16 @@ run_qbasic() {
       -I '$_cpu_vm = "emulated"'
       -E "${dos_command}"
     )
-    exec_dosemu_interactive "${home_dir}" "${runtime_dir}/dosemu.log" "${dosemu_args[@]}"
+    if [[ -n "${preload}" ]]; then
+      exec env LD_PRELOAD="${preload}" python3 "${ROOT_DIR}/src/qbasic_interactive.py" \
+        --home "${home_dir}" \
+        --log-file "${runtime_dir}/dosemu.log" \
+        -- "${dosemu_args[@]}"
+    fi
+    exec python3 "${ROOT_DIR}/src/qbasic_interactive.py" \
+      --home "${home_dir}" \
+      --log-file "${runtime_dir}/dosemu.log" \
+      -- "${dosemu_args[@]}"
   fi
 
   local dosemu_args=(

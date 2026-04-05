@@ -245,14 +245,16 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --interactive requires a TTY (stdin is not a terminal)", file=sys.stderr)
         return 2
 
+    use_terminal = args.interactive
+
     stdin_bytes = b""
     terminal: RawTerminal | None = None
     terminal_manager: RawTerminal | None = None
 
-    if args.interactive or sys.stdin.isatty():
+    if use_terminal:
         terminal_manager = RawTerminal()
         terminal = terminal_manager.__enter__()
-    else:
+    elif not sys.stdin.isatty():
         stdin_bytes = sys.stdin.buffer.read()
 
     try:

@@ -14,6 +14,10 @@ from .memory import PC8001Memory
 from .ports import DISPLAY_DATA_PORT, KEYBOARD_DATA_PORT, KEYBOARD_STATUS_PORT, PC8001Ports
 
 
+class InputRequestError(RuntimeError):
+    """Raised when batch execution reaches interactive input."""
+
+
 @dataclass(frozen=True, slots=True)
 class RomSpec:
     path: Path
@@ -131,8 +135,7 @@ class PC8001Machine:
         if self._use_host_terminal():
             self._load_host_basic_program(source_path)
             return
-        for raw_line in source_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.rstrip("\r")
+        for line in _read_basic_source_lines(source_path):
             if not line:
                 continue
             self.inject_keys([ord(char) for char in line] + [0x0D])
@@ -144,6 +147,7 @@ class PC8001Machine:
         # Batch mode: when a startup program was loaded *and* run, print
         # accumulated output and exit without entering the interactive loop.
         if self.config.startup_program is not None and self.config.run_startup and self._use_host_terminal():
+            self._raise_if_batch_requested_input()
             self._print_non_tty_output()
             return 0
 
@@ -318,7 +322,7 @@ class PC8001Machine:
         self.memory.write_byte(base + min(len(normalized), 255), 0x00)
 
     def _load_host_basic_program(self, path: Path) -> None:
-        compiled = _compile_n80_basic_program(path.read_text(encoding="utf-8"))
+        compiled = _compile_n80_basic_program(_read_basic_source_text(path))
         if not compiled:
             return
         self._install_host_basic_placeholders(compiled)
@@ -351,8 +355,42 @@ class PC8001Machine:
         rounds = max_rounds if max_rounds is not None else self.config.batch_rounds
         for _ in range(rounds):
             result = self.run_firmware(max_steps=self.config.max_steps)
+            self._stream_batch_console_output()
             if result.reason != "step_limit":
                 return
+
+    def _raise_if_batch_requested_input(self) -> None:
+        if (
+            self.config.startup_program is None
+            or not self.config.run_startup
+            or not self._use_host_terminal()
+            or self.last_result is None
+            or self.last_result.reason != "input_wait"
+        ):
+            return
+        text = "".join(self.console_output)
+        if text.rstrip().endswith("Ok"):
+            return
+        raise InputRequestError("interactive program input is not supported in --run --file mode")
+
+    def _stream_batch_console_output(self) -> None:
+        if not self._should_stream_batch_console_output():
+            return
+        text = self.consume_console_output()
+        if not text:
+            return
+        text = _filter_nbasic_batch_output(text)
+        if not text:
+            return
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
+    def _should_stream_batch_console_output(self) -> bool:
+        return (
+            self._use_host_terminal()
+            and self.config.startup_program is not None
+            and not sys.stdout.isatty()
+        )
 
     def _print_non_tty_output(self) -> None:
         text = self.consume_console_output()
@@ -396,6 +434,17 @@ def _filter_nbasic_batch_output(text: str) -> str:
     """Remove ROM banner and bare 'Ok' prompts from N-BASIC batch output."""
     lines = text.splitlines(keepends=True)
     return "".join(line for line in lines if not _NBASIC_NOISE_RE.match(line))
+
+
+def _read_basic_source_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="ascii")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"BASIC source must be ASCII only: {path}") from exc
+
+
+def _read_basic_source_lines(path: Path) -> list[str]:
+    return [line.rstrip("\r") for line in _read_basic_source_text(path).splitlines()]
 
 
 DEMO_PROGRAM = bytes(
@@ -451,8 +500,12 @@ _KEYWORD_TOKENS: tuple[tuple[str, bytes], ...] = (
     ("GOSUB", bytes([0x8D])),
     ("VARPTR", bytes([0xE5])),
     ("PRINT", bytes([0x91])),
+    ("INPUT", bytes([0x85])),
     ("HEX$", bytes([0xFF, 0x9A])),
     ("PEEK", bytes([0xFF, 0x97])),
+    ("SQR", bytes([0xFF, 0x87])),
+    ("ABS", bytes([0xFF, 0x86])),
+    ("ATN", bytes([0xFF, 0x8E])),
     ("POKE", bytes([0x98])),
     ("NEXT", bytes([0x83])),
     ("INT", bytes([0xFF, 0x85])),

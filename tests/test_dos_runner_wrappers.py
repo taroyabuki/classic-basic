@@ -20,6 +20,357 @@ def _write_executable(path: Path, content: str) -> None:
 class DosRunnerWrapperTests(unittest.TestCase):
     maxDiff = None
 
+    def test_qbasic_plain_launch_uses_interactive_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, logs = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_QBASIC_ARCHIVE": str(temp_path / "downloads/qbasic/qbasic-1.1.zip"),
+                    "CLASSIC_BASIC_QBASIC_EXE": str(temp_path / "downloads/qbasic/QBASIC.EXE"),
+                    "PYTHONPATH": str(ROOT_DIR / "src"),
+                }
+            )
+
+            result, runtime_dir = self._run_wrapper(
+                env=env,
+                runtime_name="qbasic-runtime",
+                home_name="qbasic-home",
+                runner=ROOT_DIR / "run/qbasic.sh",
+                source_name="unused.bas",
+                run_mode=False,
+                with_file=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            dosemu_args = logs["dosemu"].read_text(encoding="ascii").splitlines()
+            self.assertEqual(len(dosemu_args), 1)
+            self.assertIn("-E qbasic", dosemu_args[0])
+            self.assertIn(f"--Fdrive_c {runtime_dir / 'drive_c'}", dosemu_args[0])
+
+    def test_qbasic_file_launch_stages_program_for_interactive_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, logs = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_QBASIC_ARCHIVE": str(temp_path / "downloads/qbasic/qbasic-1.1.zip"),
+                    "CLASSIC_BASIC_QBASIC_EXE": str(temp_path / "downloads/qbasic/QBASIC.EXE"),
+                    "PYTHONPATH": str(ROOT_DIR / "src"),
+                }
+            )
+
+            result, runtime_dir = self._run_wrapper(
+                env=env,
+                runtime_name="qbasic-runtime",
+                home_name="qbasic-home",
+                runner=ROOT_DIR / "run/qbasic.sh",
+                source_name="qbasic.bas",
+                run_mode=False,
+                source_text='10 PRINT "X"\n20 END\n',
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            dosemu_args = logs["dosemu"].read_text(encoding="ascii").splitlines()
+            self.assertEqual(len(dosemu_args), 1)
+            self.assertIn("-E qbasic RUNFILE.BAS", dosemu_args[0])
+            self.assertEqual(
+                (runtime_dir / "drive_c" / "RUNFILE.BAS").read_bytes(),
+                b'10 PRINT "X"\r\n20 END\r\n',
+            )
+
+    def test_qbasic_file_launch_accepts_cr_line_endings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, _ = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_QBASIC_ARCHIVE": str(temp_path / "downloads/qbasic/qbasic-1.1.zip"),
+                    "CLASSIC_BASIC_QBASIC_EXE": str(temp_path / "downloads/qbasic/QBASIC.EXE"),
+                    "PYTHONPATH": str(ROOT_DIR / "src"),
+                }
+            )
+
+            result, runtime_dir = self._run_wrapper(
+                env=env,
+                runtime_name="qbasic-runtime",
+                home_name="qbasic-home",
+                runner=ROOT_DIR / "run/qbasic.sh",
+                source_name="qbasic.bas",
+                run_mode=False,
+                source_bytes=b'10 PRINT "X"\r20 END\r',
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                (runtime_dir / "drive_c" / "RUNFILE.BAS").read_bytes(),
+                b'10 PRINT "X"\r\n20 END\r\n',
+            )
+
+    def test_qbasic_run_requires_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, _ = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_QBASIC_ARCHIVE": str(temp_path / "downloads/qbasic/qbasic-1.1.zip"),
+                    "CLASSIC_BASIC_QBASIC_EXE": str(temp_path / "downloads/qbasic/QBASIC.EXE"),
+                    "PYTHONPATH": str(ROOT_DIR / "src"),
+                }
+            )
+
+            result, _ = self._run_wrapper(
+                env=env,
+                runtime_name="qbasic-runtime",
+                home_name="qbasic-home",
+                runner=ROOT_DIR / "run/qbasic.sh",
+                source_name="unused.bas",
+                with_file=False,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--run requires --file PROGRAM.bas", result.stderr)
+
+    def test_qbasic_timeout_requires_run_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, _ = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_QBASIC_ARCHIVE": str(temp_path / "downloads/qbasic/qbasic-1.1.zip"),
+                    "CLASSIC_BASIC_QBASIC_EXE": str(temp_path / "downloads/qbasic/QBASIC.EXE"),
+                    "PYTHONPATH": str(ROOT_DIR / "src"),
+                }
+            )
+
+            result, _ = self._run_wrapper(
+                env=env,
+                runtime_name="qbasic-runtime",
+                home_name="qbasic-home",
+                runner=ROOT_DIR / "run/qbasic.sh",
+                source_name="unused.bas",
+                run_mode=False,
+                with_file=False,
+                extra_args=["--timeout", "12"],
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--timeout requires --run --file PROGRAM.bas", result.stderr)
+
+    def test_qbasic_file_and_command_are_mutually_exclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, _ = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_QBASIC_ARCHIVE": str(temp_path / "downloads/qbasic/qbasic-1.1.zip"),
+                    "CLASSIC_BASIC_QBASIC_EXE": str(temp_path / "downloads/qbasic/QBASIC.EXE"),
+                    "PYTHONPATH": str(ROOT_DIR / "src"),
+                }
+            )
+
+            result, _ = self._run_wrapper(
+                env=env,
+                runtime_name="qbasic-runtime",
+                home_name="qbasic-home",
+                runner=ROOT_DIR / "run/qbasic.sh",
+                source_name="qbasic.bas",
+                run_mode=False,
+                extra_args=["--command", "edit"],
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--file cannot be combined with --command", result.stderr)
+
+    def test_qbasic_run_file_rejects_program_input_before_starting_dosemu(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, logs = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_QBASIC_ARCHIVE": str(temp_path / "downloads/qbasic/qbasic-1.1.zip"),
+                    "CLASSIC_BASIC_QBASIC_EXE": str(temp_path / "downloads/qbasic/QBASIC.EXE"),
+                    "PYTHONPATH": str(ROOT_DIR / "src"),
+                }
+            )
+
+            result, runtime_dir = self._run_wrapper(
+                env=env,
+                runtime_name="qbasic-runtime",
+                home_name="qbasic-home",
+                runner=ROOT_DIR / "run/qbasic.sh",
+                source_name="input.bas",
+                source_text='10 INPUT "N";A\n20 END\n',
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("program input is not supported in --run mode", result.stderr)
+            self.assertFalse(logs["dosemu"].exists())
+            self.assertEqual(
+                (runtime_dir / "drive_c" / "RUNFILE.BAS").read_bytes(),
+                b'10 INPUT "N";A\r\n20 END\r\n',
+            )
+
+    def test_gwbasic_plain_launch_uses_interactive_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, logs = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_GWBASIC_ARCHIVE": str(temp_path / "downloads/gwbasic/gwbasic-3.23.7z"),
+                    "CLASSIC_BASIC_GWBASIC_EXE": str(temp_path / "downloads/gwbasic/GWBASIC.EXE"),
+                }
+            )
+
+            result, runtime_dir = self._run_wrapper(
+                env=env,
+                runtime_name="gwbasic-runtime",
+                home_name="gwbasic-home",
+                runner=ROOT_DIR / "run/gwbasic.sh",
+                source_name="unused.bas",
+                run_mode=False,
+                with_file=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            dosemu_args = logs["dosemu"].read_text(encoding="ascii").splitlines()
+            self.assertEqual(len(dosemu_args), 1)
+            self.assertIn("-E gwbasic", dosemu_args[0])
+            self.assertIn(f"--Fdrive_c {runtime_dir / 'drive_c'}", dosemu_args[0])
+
+    def test_gwbasic_file_launch_stages_program_for_interactive_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, logs = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_GWBASIC_ARCHIVE": str(temp_path / "downloads/gwbasic/gwbasic-3.23.7z"),
+                    "CLASSIC_BASIC_GWBASIC_EXE": str(temp_path / "downloads/gwbasic/GWBASIC.EXE"),
+                }
+            )
+
+            result, runtime_dir = self._run_wrapper(
+                env=env,
+                runtime_name="gwbasic-runtime",
+                home_name="gwbasic-home",
+                runner=ROOT_DIR / "run/gwbasic.sh",
+                source_name="gwbasic.bas",
+                run_mode=False,
+                source_text='10 PRINT "X"\n20 END\n',
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            dosemu_args = logs["dosemu"].read_text(encoding="ascii").splitlines()
+            self.assertEqual(len(dosemu_args), 1)
+            self.assertIn("-E gwbasic RUNFILE.BAS", dosemu_args[0])
+            self.assertEqual(
+                (runtime_dir / "drive_c" / "RUNFILE.BAS").read_bytes(),
+                b'10 PRINT "X"\r\n20 END\r\n',
+            )
+
+    def test_gwbasic_file_launch_accepts_cr_line_endings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, _ = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_GWBASIC_ARCHIVE": str(temp_path / "downloads/gwbasic/gwbasic-3.23.7z"),
+                    "CLASSIC_BASIC_GWBASIC_EXE": str(temp_path / "downloads/gwbasic/GWBASIC.EXE"),
+                }
+            )
+
+            result, runtime_dir = self._run_wrapper(
+                env=env,
+                runtime_name="gwbasic-runtime",
+                home_name="gwbasic-home",
+                runner=ROOT_DIR / "run/gwbasic.sh",
+                source_name="gwbasic.bas",
+                run_mode=False,
+                source_bytes=b'10 PRINT "X"\r20 END\r',
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                (runtime_dir / "drive_c" / "RUNFILE.BAS").read_bytes(),
+                b'10 PRINT "X"\r\n20 END\r\n',
+            )
+
+    def test_gwbasic_run_requires_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, _ = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_GWBASIC_ARCHIVE": str(temp_path / "downloads/gwbasic/gwbasic-3.23.7z"),
+                    "CLASSIC_BASIC_GWBASIC_EXE": str(temp_path / "downloads/gwbasic/GWBASIC.EXE"),
+                }
+            )
+
+            result, _ = self._run_wrapper(
+                env=env,
+                runtime_name="gwbasic-runtime",
+                home_name="gwbasic-home",
+                runner=ROOT_DIR / "run/gwbasic.sh",
+                source_name="unused.bas",
+                with_file=False,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--run requires --file PROGRAM.bas", result.stderr)
+
+    def test_gwbasic_timeout_requires_run_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, _ = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_GWBASIC_ARCHIVE": str(temp_path / "downloads/gwbasic/gwbasic-3.23.7z"),
+                    "CLASSIC_BASIC_GWBASIC_EXE": str(temp_path / "downloads/gwbasic/GWBASIC.EXE"),
+                }
+            )
+
+            result, _ = self._run_wrapper(
+                env=env,
+                runtime_name="gwbasic-runtime",
+                home_name="gwbasic-home",
+                runner=ROOT_DIR / "run/gwbasic.sh",
+                source_name="unused.bas",
+                run_mode=False,
+                with_file=False,
+                extra_args=["--timeout", "12"],
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--timeout requires --run --file PROGRAM.bas", result.stderr)
+
+    def test_gwbasic_run_file_rejects_program_input_before_starting_dosemu(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, logs = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_GWBASIC_ARCHIVE": str(temp_path / "downloads/gwbasic/gwbasic-3.23.7z"),
+                    "CLASSIC_BASIC_GWBASIC_EXE": str(temp_path / "downloads/gwbasic/GWBASIC.EXE"),
+                }
+            )
+
+            result, runtime_dir = self._run_wrapper(
+                env=env,
+                runtime_name="gwbasic-runtime",
+                home_name="gwbasic-home",
+                runner=ROOT_DIR / "run/gwbasic.sh",
+                source_name="input.bas",
+                source_text='10 INPUT "N";A\n20 END\n',
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("program input is not supported in --run mode", result.stderr)
+            self.assertFalse(logs["dosemu"].exists())
+            self.assertEqual(
+                (runtime_dir / "drive_c" / "RUNFILE.BAS").read_bytes(),
+                b'10 INPUT "N";A\r\n20 END\r\n',
+            )
+
     def test_gwbasic_file_run_collects_redirected_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
@@ -430,7 +781,7 @@ class DosRunnerWrapperTests(unittest.TestCase):
               esac
             done
             if [[ -n "${cmd_arg}" ]]; then
-              exec bash "${cmd_arg}"
+              exec bash -lc "${cmd_arg}"
             fi
             exit 0
             """,
@@ -454,11 +805,18 @@ class DosRunnerWrapperTests(unittest.TestCase):
         runner: Path,
         source_name: str,
         extra_args: list[str] | None = None,
+        run_mode: bool = True,
+        with_file: bool = True,
+        source_text: str = "10 PRINT 42\n",
+        source_bytes: bytes | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], Path]:
         runtime_dir = Path(env["FAKE_DOSEMU_ARGS_LOG"]).parent / runtime_name
         home_dir = Path(env["FAKE_DOSEMU_ARGS_LOG"]).parent / home_name
         source_path = runtime_dir.parent / source_name
-        source_path.write_text("10 PRINT 42\n", encoding="ascii")
+        if source_bytes is None:
+            source_path.write_text(source_text, encoding="ascii")
+        else:
+            source_path.write_bytes(source_bytes)
         command = [
             "bash",
             str(runner),
@@ -466,10 +824,11 @@ class DosRunnerWrapperTests(unittest.TestCase):
             str(runtime_dir),
             "--home",
             str(home_dir),
-            "--run",
-            "--file",
-            str(source_path),
         ]
+        if run_mode:
+            command.append("--run")
+        if with_file:
+            command.extend(["--file", str(source_path)])
         if extra_args:
             command.extend(extra_args)
 

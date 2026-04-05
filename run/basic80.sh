@@ -88,15 +88,24 @@ fi
 
 vendor_runcpm "${vendor_update}"
 prepare_runtime "${runtime_dir}" "${mbasic_path}" ""
+export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 if [[ -n "${file_path}" ]]; then
   staged_program="$(copy_basic_program "${file_path}" "${runtime_dir}/A/0")"
   if [[ "${run_program}" != "1" ]]; then
     printf 'MBASIC\n' > "${runtime_dir}/AUTOEXEC.TXT"
+    (
+      sleep 1
+      rm -f "${runtime_dir}/AUTOEXEC.TXT"
+    ) &
+    if [[ -t 0 ]]; then
+      startup_command="$(printf 'LOAD "%s"\r' "${staged_program}")"
+      exec python3 -m basic80_interactive --runtime "${runtime_dir}" --startup-command "${startup_command}"
+    fi
     exec < <(
       printf 'LOAD "%s"\r' "${staged_program}"
       cat
     )
-    launch_with_one_shot_autoexec "${runtime_dir}"
+    launch_shell "${runtime_dir}"
     exit $?
   fi
   printf 'MBASIC %s\n' "${staged_program}" > "${runtime_dir}/AUTOEXEC.TXT"
@@ -107,4 +116,7 @@ if [[ -n "${file_path}" ]]; then
   fi
   exit $?
 fi
-launch_with_one_shot_autoexec "${runtime_dir}"
+if [[ -t 0 ]]; then
+  exec python3 -m basic80_interactive --runtime "${runtime_dir}"
+fi
+launch_shell "${runtime_dir}"

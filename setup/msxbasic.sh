@@ -6,15 +6,71 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DOWNLOAD_DIR="${ROOT_DIR}/downloads"
 MSX_DIR="${DOWNLOAD_DIR}/msx"
 USAGE_NAME="${CLASSIC_BASIC_USAGE_NAME:-$0}"
-ARCHIVE_PATH="${DOWNLOAD_DIR}/blueMSXv282full.exe"
-DOWNLOAD_URL="https://web.archive.org/web/20260219123305/http://bluemsx.msxblue.com/rel_download/blueMSXv282full.exe"
+ARCHIVE_PATH="${DOWNLOAD_DIR}/neo-kobe-emulator-pack-2013-08-17.7z"
+DOWNLOAD_URL="${CLASSIC_BASIC_MSXBASIC_NEO_KOBE_URL:-https://archive.org/download/neo-kobe-emulator-pack-2013-08-17.7z/Neo%20Kobe%20emulator%20pack%202013-08-17.7z}"
 DEST_ROM="${MSX_DIR}/msx1-basic-bios.rom"
 DEST_VG8020_ROM="${MSX_DIR}/vg8020-20_basic-bios1.rom"
 TARGET_ROM_SHA256="1c85dac5536fa3ba6f2cb70deba02ff680b34ac6cc787d2977258bd663a99555"
+ARCHIVE_MEMBER="MSX/OpenMSX 0.9.1/share/machines/Philips_VG_8020-20/roms/vg8020-20_basic-bios1.rom"
 
 die() {
   echo "error: $*" >&2
   exit 2
+}
+
+run_as_root() {
+  if [[ "${EUID}" == "0" ]]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    return 1
+  fi
+}
+
+apt_package_has_candidate() {
+  local package="$1"
+  local apt_output
+  apt_output="$(apt-cache policy "${package}" 2>/dev/null || true)"
+  [[ -n "${apt_output}" ]] || return 1
+  grep -Eq 'Candidate:[[:space:]]*\(none\)$' <<<"${apt_output}" && return 1
+  grep -Eq 'Candidate:[[:space:]]*[^[:space:]]+' <<<"${apt_output}"
+}
+
+try_install_apt_package() {
+  local package
+  for package in "$@"; do
+    if ! apt_package_has_candidate "${package}"; then
+      continue
+    fi
+    if run_as_root apt-get install -y "${package}"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+ensure_command_available() {
+  local command_name="$1"
+  shift
+  command -v "${command_name}" >/dev/null 2>&1 && return 0
+  command -v apt-get >/dev/null 2>&1 || return 1
+
+  export DEBIAN_FRONTEND=noninteractive
+  if [[ -z "${CLASSIC_BASIC_APT_UPDATED:-}" ]]; then
+    run_as_root apt-get update
+    CLASSIC_BASIC_APT_UPDATED=1
+    export CLASSIC_BASIC_APT_UPDATED
+  fi
+
+  try_install_apt_package "$@" || return 1
+  command -v "${command_name}" >/dev/null 2>&1
+}
+
+ensure_prerequisites() {
+  ensure_command_available curl curl || die "curl is not installed"
+  ensure_command_available 7z p7zip-full 7zip || die "7z is not installed"
+  ensure_command_available openmsx openmsx || die "openMSX is not installed"
 }
 
 usage() {
@@ -23,14 +79,14 @@ Usage:
   $USAGE_NAME [--archive PATH] [--download-url URL] [--force-download]
 
 What it does:
-  1. Download blueMSX 2.8.2 Full if needed
-  2. Extract the bundled MSX1 BIOS+BASIC ROM from the installer
+  1. Download the Neo Kobe emulator pack if needed
+  2. Extract ${ARCHIVE_MEMBER}
   3. Write downloads/msx/msx1-basic-bios.rom
 
 Options:
-  --archive PATH       Use an existing blueMSX Full installer archive.
+  --archive PATH       Use an existing Neo Kobe emulator pack archive.
   --download-url URL   Override the archive download URL.
-  --force-download     Re-download the installer even if it already exists.
+  --force-download     Re-download the archive even if it already exists.
 EOF
 }
 
@@ -66,6 +122,8 @@ done
 
 mkdir -p "${DOWNLOAD_DIR}" "${MSX_DIR}"
 
+ensure_prerequisites
+
 if [[ "${force_download}" == "1" || ! -f "${archive_path}" ]]; then
   curl -fL --retry 3 --output "${archive_path}" "${download_url}"
 fi
@@ -78,56 +136,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-7z e -y "-o${tmpdir}" "${archive_path}" bluemsx.msi >/dev/null
-[[ -f "${tmpdir}/bluemsx.msi" ]] || die "failed to extract bluemsx.msi"
-
-cab_name="$(
-  7z l "${tmpdir}/bluemsx.msi" |
-    awk '
-      /^-------------------/ {in_table = !in_table; next}
-      in_table && $1 == "....." && NF >= 4 && $4 !~ /^!/ && $4 !~ /^\[/ {
-        size = $2 + 0
-        name = $4
-        if (size > best) {
-          best = size
-          best_name = name
-        }
-      }
-      END {
-        if (best_name != "") {
-          print best_name
-        }
-      }
-    '
-)"
-[[ -n "${cab_name}" ]] || die "failed to locate the MSI cabinet payload"
-
-7z e -y "-o${tmpdir}" "${tmpdir}/bluemsx.msi" "${cab_name}" >/dev/null
-cab_path="${tmpdir}/${cab_name}"
-[[ -f "${cab_path}" ]] || die "failed to extract cabinet payload"
-
-mkdir -p "${tmpdir}/cab"
-7z x -y "-o${tmpdir}/cab" "${cab_path}" >/dev/null
-
-matched_rom="$(
-  find "${tmpdir}/cab" -type f -size 32768c -print0 |
-    while IFS= read -r -d '' candidate; do
-      if [[ "$(sha256sum "${candidate}" | awk '{print $1}')" == "${TARGET_ROM_SHA256}" ]]; then
-        printf '%s\n' "${candidate}"
-        break
-      fi
-    done
-)"
-
-[[ -n "${matched_rom}" ]] || die "failed to locate the expected MSX1 BIOS+BASIC ROM in ${archive_path}"
+7z e -y "-o${tmpdir}" "${archive_path}" "${ARCHIVE_MEMBER}" >/dev/null
+matched_rom="${tmpdir}/vg8020-20_basic-bios1.rom"
+[[ -f "${matched_rom}" ]] || die "failed to extract ${ARCHIVE_MEMBER}"
+[[ "$(sha256sum "${matched_rom}" | awk '{print $1}')" == "${TARGET_ROM_SHA256}" ]] || \
+  die "unexpected ROM hash for ${ARCHIVE_MEMBER}"
 
 cp -f "${matched_rom}" "${DEST_ROM}"
 cp -f "${matched_rom}" "${DEST_VG8020_ROM}"
 
 echo "Installed ${DEST_ROM}"
 echo "Installed ${DEST_VG8020_ROM}"
-if command -v openmsx >/dev/null 2>&1; then
-  echo "openMSX is already installed"
-else
-  echo "note: openMSX is not installed; run/msxbasic.sh will require it"
-fi
+echo "openMSX is ready"

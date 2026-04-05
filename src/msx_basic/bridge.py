@@ -16,6 +16,9 @@ from queue import Empty, Queue
 from typing import Iterator
 
 
+_SCREEN_CURSOR_MARKER = "\n@@CURSOR_ROW@@"
+
+
 class OpenMSXError(RuntimeError):
     """Raised when openMSX returns a ``result="nok"`` reply."""
 
@@ -24,6 +27,10 @@ class OpenMSXBridge:
     """Start and communicate with an openMSX process via -control stdio."""
 
     POLL_INTERVAL = 0.08  # seconds between screen polls
+    STARTUP_SETTLE_DELAY = 0.5
+    STARTUP_POWER_TIMEOUT = 5.0
+    STARTUP_ATTEMPTS = 3
+    STARTUP_RETRY_DELAY = 1.0
 
     def __init__(
         self,
@@ -44,6 +51,26 @@ class OpenMSXBridge:
     # ------------------------------------------------------------------ #
 
     def start(self) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, self.STARTUP_ATTEMPTS + 1):
+            try:
+                self._start_once()
+                return
+            except FileNotFoundError:
+                self.stop()
+                raise
+            except Exception as exc:
+                last_error = exc
+                self.stop()
+                if attempt >= self.STARTUP_ATTEMPTS:
+                    break
+                time.sleep(self.STARTUP_RETRY_DELAY * attempt)
+        assert last_error is not None
+        raise RuntimeError(
+            f"openMSX startup failed after {self.STARTUP_ATTEMPTS} attempts"
+        ) from last_error
+
+    def _start_once(self) -> None:
         env = os.environ.copy()
         env["SDL_VIDEODRIVER"] = "dummy"
         env["SDL_AUDIODRIVER"] = "dummy"
@@ -55,6 +82,8 @@ class OpenMSXBridge:
             cmd += ["-command", f"filepool add -type system_rom -path {self._extra_rom_path}"]
         cmd += self._extra_args
 
+        self._reply_queue = Queue()
+        self._buf = ""
         self._proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -70,8 +99,8 @@ class OpenMSXBridge:
 
         # With -control stdio, openMSX sets parseStatus=CONTROL so it does NOT
         # automatically power up the machine.  We must do it explicitly.
-        time.sleep(0.5)
-        self.command("set power on", timeout=5.0)
+        time.sleep(self.STARTUP_SETTLE_DELAY)
+        self.command("set power on", timeout=self.STARTUP_POWER_TIMEOUT)
 
     def stop(self) -> None:
         if self._proc is None:
@@ -85,6 +114,9 @@ class OpenMSXBridge:
             if self._proc.poll() is None:
                 self._proc.terminate()
             self._proc = None
+            self._reader_thread = None
+            self._reply_queue = Queue()
+            self._buf = ""
 
     def __enter__(self) -> "OpenMSXBridge":
         self.start()
@@ -110,25 +142,36 @@ class OpenMSXBridge:
         """Send a Tcl command without waiting for a reply."""
         self._send_raw(tcl_code)
 
-    def get_screen(self, timeout: float = 2.0) -> list[str]:
-        """Return the MSX text-mode screen as a list of 24 stripped strings."""
-        raw = self.command("get_screen", timeout=timeout)
-        if not raw:
-            return [""] * 24
-        lines = raw.split("\n")
-        # get_screen produces 24 lines followed by a trailing newline → 25 items
+    def get_screen_state(self, timeout: float = 2.0) -> tuple[list[str], int]:
+        """Return the MSX screen and cursor row from one Tcl command."""
+        raw = self.command(
+            'set s [get_screen]; append s "\n@@CURSOR_ROW@@" [peek 0xF3DC]; set s',
+            timeout=timeout,
+        )
+        screen_raw, marker, cursor_raw = raw.rpartition(_SCREEN_CURSOR_MARKER)
+        if not marker:
+            screen_raw = raw
+            cursor_row = 0
+        else:
+            try:
+                cursor_row = int(cursor_raw.strip())
+            except ValueError:
+                cursor_row = 0
+        lines = screen_raw.split("\n") if screen_raw else []
         result = [line.rstrip() for line in lines[:24]]
-        # Pad to exactly 24 lines if the result is shorter
         while len(result) < 24:
             result.append("")
-        return result
+        return result, cursor_row
+
+    def get_screen(self, timeout: float = 2.0) -> list[str]:
+        """Return the MSX text-mode screen as a list of 24 stripped strings."""
+        lines, _ = self.get_screen_state(timeout=timeout)
+        return lines
 
     def get_cursor_row(self) -> int:
         """Return the current cursor row (0-based) from MSX system RAM."""
-        try:
-            return int(self.command("peek 0xF3DC", timeout=1.0))
-        except (ValueError, TimeoutError):
-            return 0
+        _, cursor_row = self.get_screen_state(timeout=1.0)
+        return cursor_row
 
     def peek16(self, address: int, timeout: float = 1.0) -> int:
         """Return a 16-bit little-endian value from MSX memory."""
@@ -192,11 +235,13 @@ class OpenMSXBridge:
 
     def _read_loop(self) -> None:
         """Background thread: read bytes from openMSX stdout, parse XML elements."""
-        assert self._proc is not None
-        assert self._proc.stdout is not None
+        proc = self._proc
+        assert proc is not None
+        stdout = proc.stdout
+        assert stdout is not None
         buf = ""
         while True:
-            chunk = self._proc.stdout.read(512)
+            chunk = stdout.read(512)
             if not chunk:
                 break
             try:

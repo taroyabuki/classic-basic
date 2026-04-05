@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-from .machine import PC8001Config, PC8001Machine, RomSpec, _preprocess_n80_basic_source
+from .machine import InputRequestError, PC8001Config, PC8001Machine, RomSpec, _preprocess_n80_basic_source
 
 DEFAULT_ROM_PATH = Path(__file__).resolve().parent.parent.parent / "downloads/pc8001/N80_11.rom"
 
@@ -206,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.show_vram_summary:
             print(machine.format_vram_summary(), file=sys.stderr)
         return rc
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, InputRequestError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

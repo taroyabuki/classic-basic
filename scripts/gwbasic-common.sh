@@ -20,10 +20,10 @@ die() {
 }
 
 ensure_gwbasic_tools() {
-  dosemu_command >/dev/null 2>&1 || die "dosemu or dosemu2 is not installed"
-  command -v curl >/dev/null 2>&1 || die "curl is required"
-  command -v 7z >/dev/null 2>&1 || die "7z is required"
-  command -v mcopy >/dev/null 2>&1 || die "mtools is required"
+  ensure_dosemu_with_apt || die "dosemu or dosemu2 is not installed"
+  ensure_command_with_apt curl curl || die "curl is required"
+  ensure_command_with_apt 7z p7zip-full 7zip || die "7z is required"
+  ensure_command_with_apt mcopy mtools || die "mtools is required"
 }
 
 download_gwbasic_archive() {

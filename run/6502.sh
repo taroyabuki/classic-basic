@@ -9,6 +9,7 @@ USAGE_NAME="${CLASSIC_BASIC_USAGE_NAME:-$0}"
 usage() {
   cat <<EOF
 Usage:
+  $USAGE_NAME [--rom PATH] [--memory-size N] [--terminal-width N] [--max-steps N]
   $USAGE_NAME [--rom PATH] [--exec STATEMENTS] [--memory-size N] [--terminal-width N] [--max-steps N]
   $USAGE_NAME [--rom PATH] [--memory-size N] [--terminal-width N] [--max-steps N] --file PROGRAM.bas
   $USAGE_NAME [--rom PATH] [--memory-size N] [--terminal-width N] [--max-steps N] --run --file PROGRAM.bas
@@ -16,9 +17,10 @@ Usage:
 What it does:
   1. Boot OSI Microsoft BASIC for 6502 on a vendored 6502 emulator
   2. Auto-answer the initial MEMORY SIZE? / TERMINAL WIDTH? prompts
-  3. With --file PROGRAM.bas, load the program and drop into the interactive terminal
-  4. With --run --file PROGRAM.bas, run the program and exit
-  5. With --exec, execute statements in direct mode
+  3. With no --file/--exec, start the interactive terminal
+  4. With --file PROGRAM.bas, load the program and drop into the interactive terminal
+  5. With --run --file PROGRAM.bas, run the program and exit
+  6. With --exec, execute statements in direct mode and exit
 
 Examples:
   $USAGE_NAME
@@ -33,8 +35,8 @@ exec_text=""
 file_path=""
 run_program=""
 memory_size="8191"
-terminal_width="72"
-max_steps="50000000"
+terminal_width="80"
+max_steps="5000000000"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -102,6 +104,8 @@ if [[ -n "${file_path}" ]]; then
   else
     args+=(--interactive "${file_path}")
   fi
+elif [[ -z "${exec_text}" ]]; then
+  args+=(--interactive)
 fi
 
 PYTHONPATH="${ROOT_DIR}/src" exec python3 -m z80_basic.osi_basic "${args[@]}"

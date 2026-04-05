@@ -65,24 +65,23 @@ def build_parser() -> argparse.ArgumentParser:
         "program",
         nargs="?",
         type=Path,
-        help="Optional BASIC source file to type in and RUN in batch mode.",
+        help="Optional line-numbered ASCII BASIC source file.",
     )
     parser.add_argument(
         "--interactive",
         "-i",
         action="store_true",
         help=(
-            "Interactive mode: type PROGRAM.bas into memory (no RUN) then drop "
-            "into the interactive terminal. Without PROGRAM.bas, just start the "
-            "terminal as normal."
+            "Start interactive mode. With PROGRAM.bas, load it first and leave "
+            "it ready to RUN from the Ok prompt."
         ),
     )
     parser.add_argument(
         "--run-loaded",
         action="store_true",
         help=(
-            "Type PROGRAM.bas into memory via the interactive load path, then "
-            "RUN it and print the completed output lines."
+            "Load PROGRAM.bas via the interactive path, RUN it, print output, "
+            "and exit without returning to interactive mode."
         ),
     )
 

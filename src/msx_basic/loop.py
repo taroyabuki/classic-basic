@@ -7,11 +7,13 @@ Bridges the user's terminal to the MSX running inside openMSX:
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 import sys
 
 from .bridge import OpenMSXBridge
+from .program_check import validate_program_text
 
 
 def _is_subsequence(subseq: list[str], seq: list[str]) -> bool:
@@ -32,10 +34,23 @@ _BACKSPACE = r"\b"
 
 # How often to poll the MSX screen (seconds)
 _POLL_INTERVAL = 0.05
-_BATCH_INPUT_CHUNK_SIZE = 48
-_BATCH_INPUT_PAUSE = 0.02
+_BATCH_INPUT_CHUNK_SIZE = 24
+_BATCH_INPUT_PAUSE = 0.05
+_BATCH_INPUT_TIMEOUT = 30.0
 _VARTAB_ADDR = 0xF6C2
 _FUNCTION_KEY_GUIDE = "color  auto   goto   list   run"
+_BATCH_STABLE_SCREEN_POLLS = 6
+_SOURCE_LISTING_KEYWORDS = (
+    "PRINT",
+    "FOR",
+    "NEXT",
+    "IF",
+    "THEN",
+    "GOTO",
+    "DIM",
+    "DEF",
+    "CLS",
+)
 
 
 def _parse_timeout_spec(spec: str | None) -> float | None:
@@ -58,6 +73,14 @@ def _parse_timeout_spec(spec: str | None) -> float | None:
 
 
 _BATCH_RUN_TIMEOUT = _parse_timeout_spec(os.environ.get("CLASSIC_BASIC_MSX_BATCH_TIMEOUT"))
+
+
+def _get_screen_state(bridge: OpenMSXBridge, *, timeout: float = 1.0) -> tuple[list[str], int]:
+    try:
+        return bridge.get_screen_state(timeout=timeout)
+    except AttributeError:
+        return bridge.get_screen(timeout=timeout), bridge.get_cursor_row()
+
 
 
 def _cursor_line(lines: list[str], cursor_row: int) -> str:
@@ -92,6 +115,31 @@ def _last_row_with_text(lines: list[str], cursor_row: int, text: str) -> int | N
         if lines[row].strip() == target:
             return row
     return None
+
+
+def _looks_like_source_listing(text: str) -> bool:
+    import re
+
+    match = re.match(r"^\s*\d+\s*(.*)$", text)
+    if match is None:
+        return False
+    body = match.group(1).upper()
+    if not body:
+        return True
+    if any(keyword in body for keyword in _SOURCE_LISTING_KEYWORDS):
+        return True
+    return any(token in body for token in ("=", "+", "-", "*", "/", "(", ")", ":", "<", ">"))
+
+
+def _looks_like_wrapped_listing_fragment(text: str) -> bool:
+    stripped = text.strip().upper()
+    if not stripped:
+        return False
+    if re.fullmatch(r"O?TO\s+\d+", stripped) is not None:
+        return True
+    if re.fullmatch(r"[A-Z0-9*()+/\- ]+", stripped) is not None and len(stripped) <= 12:
+        return stripped in {"TO 290", "TO 310", "TO 330", "OTO 350"}
+    return False
 
 
 class ScreenTracker:
@@ -180,9 +228,19 @@ class BatchOutputTracker:
 
     def _normalize(self, line: str) -> str | None:
         stripped = line.strip()
-        if not stripped or stripped in {"Ok", "RUN"}:
+        if not stripped or stripped in {"Ok", "RUN", "R"}:
             return None
         if stripped == _FUNCTION_KEY_GUIDE:
+            return None
+        if stripped.startswith("MSX BASIC version"):
+            return None
+        if stripped.startswith("Copyright 1983 by Microsoft"):
+            return None
+        if re.fullmatch(r"\d+ Bytes free", stripped) is not None:
+            return None
+        if _looks_like_source_listing(stripped):
+            return None
+        if _looks_like_wrapped_listing_fragment(stripped):
             return None
         if stripped in self._ignored_lines:
             return None
@@ -246,8 +304,7 @@ def run_loop(bridge: OpenMSXBridge, terminal: "RawTerminal") -> None:  # type: i
         if now - last_poll >= _POLL_INTERVAL:
             last_poll = now
             try:
-                lines = bridge.get_screen(timeout=1.0)
-                cursor_row = bridge.get_cursor_row()
+                lines, cursor_row = _get_screen_state(bridge, timeout=1.0)
             except TimeoutError:
                 continue
 
@@ -333,17 +390,25 @@ def run_interactive(bridge: OpenMSXBridge) -> None:
         run_loop(bridge, terminal)
 
 
+def _configure_batch_speed(bridge: OpenMSXBridge) -> None:
+    command = getattr(bridge, "command", None)
+    if command is None:
+        return
+    command("set throttle off", timeout=3.0)
+    command("set speed 999", timeout=3.0)
+
+
 def run_batch(bridge: OpenMSXBridge, program: Path) -> int:
     """Load a BASIC source file, RUN it, and print completed output lines."""
     booted = bridge.wait_for_boot(timeout=10)
     if not booted:
         print("warning: MSX-BASIC Ok prompt not detected within 10 s.", file=sys.stderr)
 
-    _wait_for_ok_prompt(bridge, timeout=4.0)
+    _wait_for_stable_ok_prompt(bridge, timeout=4.0)
+    _configure_batch_speed(bridge)
     loaded_lines = _load_program_lines(bridge, program)
 
-    initial_lines = bridge.get_screen(timeout=1.0)
-    initial_cursor_row = bridge.get_cursor_row()
+    initial_lines, initial_cursor_row = _get_screen_state(bridge, timeout=1.0)
     output_lines = _run_loaded_program(
         bridge,
         initial_lines=initial_lines,
@@ -356,14 +421,17 @@ def run_batch(bridge: OpenMSXBridge, program: Path) -> int:
 
 def run_loaded_batch(bridge: OpenMSXBridge, program: Path) -> int:
     """Type a BASIC source file into memory via the interactive path, then RUN it."""
+    source_path = program.expanduser().resolve()
+    source_text = source_path.read_text(encoding="ascii")
+    validate_program_text(source_text)
     run_load(bridge, program)
+    _configure_batch_speed(bridge)
     loaded_lines = [
         line.rstrip("\r")
-        for line in program.expanduser().resolve().read_text(encoding="utf-8").splitlines()
+        for line in source_text.splitlines()
         if line.rstrip("\r")
     ]
-    initial_lines = bridge.get_screen(timeout=1.0)
-    initial_cursor_row = bridge.get_cursor_row()
+    initial_lines, initial_cursor_row = _get_screen_state(bridge, timeout=1.0)
     output_lines = _run_loaded_program(
         bridge,
         initial_lines=initial_lines,
@@ -388,18 +456,20 @@ def run_load(bridge: OpenMSXBridge, program: Path) -> None:
             flush=True,
         )
 
-    _wait_for_ok_prompt(bridge, timeout=4.0)
+    _wait_for_stable_ok_prompt(bridge, timeout=4.0)
+    bridge.command("set throttle off", timeout=3.0)
+    bridge.command("set speed 999", timeout=3.0)
 
     _load_program_lines(bridge, program)
 
     # Wait for the last line to be accepted and the Ok prompt to reappear.
-    _wait_for_ok_prompt(bridge, timeout=4.0)
+    _ensure_prompt_after_load(bridge, timeout=4.0)
 
 
 def _load_program_lines(bridge: OpenMSXBridge, program: Path) -> list[str]:
     loaded_lines: list[str] = []
     source_path = program.expanduser().resolve()
-    for raw_line in source_path.read_text(encoding="utf-8").splitlines():
+    for raw_line in source_path.read_text(encoding="ascii").splitlines():
         line = raw_line.rstrip("\r")
         if not line:
             continue
@@ -415,8 +485,8 @@ def _run_loaded_program(
     initial_cursor_row: int,
     ignored_lines: set[str],
 ) -> list[str]:
-    _type_text_chunks(bridge, "RUN")
-    bridge.type_text("\r", via_keybuf=True, timeout=15.0)
+    _wait_for_stable_ok_prompt(bridge, timeout=4.0)
+    bridge.type_text("RUN\r", via_keybuf=True, timeout=_BATCH_INPUT_TIMEOUT)
     return _drain_until_prompt(
         bridge,
         timeout=_BATCH_RUN_TIMEOUT,
@@ -430,8 +500,7 @@ def _drain_screen(bridge: OpenMSXBridge, tracker: ScreenTracker, *, duration: fl
     deadline = time.monotonic() + duration
     while time.monotonic() < deadline:
         try:
-            lines = bridge.get_screen(timeout=1.0)
-            cursor_row = bridge.get_cursor_row()
+            lines, cursor_row = _get_screen_state(bridge, timeout=1.0)
         except TimeoutError:
             return
         _emit_events(tracker.update(lines, cursor_row))
@@ -442,8 +511,7 @@ def _wait_for_ok_prompt(bridge: OpenMSXBridge, *, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            lines = bridge.get_screen(timeout=1.0)
-            cursor_row = bridge.get_cursor_row()
+            lines, cursor_row = _get_screen_state(bridge, timeout=1.0)
         except TimeoutError:
             continue
         if _screen_ready_for_input(lines, cursor_row):
@@ -452,12 +520,50 @@ def _wait_for_ok_prompt(bridge: OpenMSXBridge, *, timeout: float) -> bool:
     return False
 
 
+def _wait_for_stable_ok_prompt(
+    bridge: OpenMSXBridge, *, timeout: float, stable_polls: int = 3
+) -> bool:
+    deadline = time.monotonic() + timeout
+    previous_state: tuple[tuple[str, ...], int] | None = None
+    stable_count = 0
+    while time.monotonic() < deadline:
+        try:
+            lines, cursor_row = _get_screen_state(bridge, timeout=1.0)
+        except TimeoutError:
+            continue
+        if not _screen_ready_for_input(lines, cursor_row):
+            previous_state = None
+            stable_count = 0
+            time.sleep(_POLL_INTERVAL)
+            continue
+        state = (tuple(lines), cursor_row)
+        if state == previous_state:
+            stable_count += 1
+        else:
+            previous_state = state
+            stable_count = 0
+        if stable_count >= stable_polls:
+            return True
+        time.sleep(_POLL_INTERVAL)
+    return False
+
+
+def _ensure_prompt_after_load(bridge: OpenMSXBridge, *, timeout: float) -> bool:
+    if _wait_for_stable_ok_prompt(bridge, timeout=timeout):
+        return True
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        bridge.type_text("\r", via_keybuf=True, timeout=_BATCH_INPUT_TIMEOUT)
+        if _wait_for_stable_ok_prompt(bridge, timeout=2.0):
+            return True
+    return False
+
+
 def _type_program_line(bridge: OpenMSXBridge, line: str) -> None:
-    baseline_lines = bridge.get_screen(timeout=1.0)
-    baseline_cursor_row = bridge.get_cursor_row()
+    baseline_lines, baseline_cursor_row = _get_screen_state(bridge, timeout=1.0)
     baseline_program_end = _get_program_end_pointer(bridge)
     _type_text_chunks(bridge, line)
-    bridge.type_text("\r", via_keybuf=True, timeout=15.0)
+    bridge.type_text("\r", via_keybuf=True, timeout=_BATCH_INPUT_TIMEOUT)
     _wait_for_line_entry(
         bridge,
         baseline_lines,
@@ -470,8 +576,21 @@ def _type_program_line(bridge: OpenMSXBridge, line: str) -> None:
 def _type_text_chunks(bridge: OpenMSXBridge, text: str) -> None:
     for start in range(0, len(text), _BATCH_INPUT_CHUNK_SIZE):
         chunk = text[start : start + _BATCH_INPUT_CHUNK_SIZE]
-        bridge.type_text(chunk, via_keybuf=True, timeout=15.0)
+        _type_text_chunk(bridge, chunk)
         time.sleep(_BATCH_INPUT_PAUSE)
+
+
+def _type_text_chunk(bridge: OpenMSXBridge, chunk: str) -> None:
+    """Type one chunk, splitting it if keybuf injection times out."""
+    try:
+        bridge.type_text(chunk, timeout=_BATCH_INPUT_TIMEOUT)
+    except TimeoutError:
+        if len(chunk) <= 1:
+            raise
+        midpoint = len(chunk) // 2
+        _type_text_chunk(bridge, chunk[:midpoint])
+        time.sleep(_BATCH_INPUT_PAUSE)
+        _type_text_chunk(bridge, chunk[midpoint:])
 
 
 def _wait_for_line_entry(
@@ -485,8 +604,7 @@ def _wait_for_line_entry(
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            lines = bridge.get_screen(timeout=1.0)
-            cursor_row = bridge.get_cursor_row()
+            lines, cursor_row = _get_screen_state(bridge, timeout=1.0)
         except TimeoutError:
             continue
         current_program_end = _get_program_end_pointer(bridge)
@@ -528,14 +646,14 @@ def _drain_until_prompt(
     saw_prompt_departure = False
     while deadline is None or time.monotonic() < deadline:
         try:
-            lines = bridge.get_screen(timeout=1.0)
-            cursor_row = bridge.get_cursor_row()
+            lines, cursor_row = _get_screen_state(bridge, timeout=1.0)
         except TimeoutError:
             continue
         if not saw_prompt_departure:
             saw_prompt_departure = cursor_row != initial_cursor_row or lines != initial_lines
         if saw_prompt_departure:
             tracker.observe(lines, cursor_row)
+            tracker.capture_window(lines, 0, len(lines))
             if _post_run_prompt_visible(lines, cursor_row):
                 tracker.capture_window(lines, initial_cursor_row, cursor_row)
                 run_row = _last_row_with_text(lines, cursor_row, "RUN")
