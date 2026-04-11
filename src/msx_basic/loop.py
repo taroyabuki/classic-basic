@@ -29,17 +29,22 @@ def _is_subsequence(subseq: list[str], seq: list[str]) -> bool:
 
 
 # MSX special keys sent via openMSX ``type`` escapes
-_ENTER = r"\r"
-_BACKSPACE = r"\b"
+_ENTER = "\r"
+_BACKSPACE = "\b"
 
 # How often to poll the MSX screen (seconds)
 _POLL_INTERVAL = 0.05
 _BATCH_INPUT_CHUNK_SIZE = 24
 _BATCH_INPUT_PAUSE = 0.05
 _BATCH_INPUT_TIMEOUT = 30.0
+_INTERACTIVE_INPUT_TIMEOUT = 2.0
 _VARTAB_ADDR = 0xF6C2
 _FUNCTION_KEY_GUIDE = "color  auto   goto   list   run"
 _BATCH_STABLE_SCREEN_POLLS = 6
+_SOURCE_FRAGMENT_MIN_LENGTH = 12
+_BLINK_BLOCK_CURSOR = "\x1b[1 q"
+_SHOW_CURSOR = "\x1b[?25h"
+_RESET_CURSOR_STYLE = "\x1b[0 q"
 _SOURCE_LISTING_KEYWORDS = (
     "PRINT",
     "FOR",
@@ -104,6 +109,14 @@ def _screen_ready_for_input(lines: list[str], cursor_row: int) -> bool:
     )
 
 
+def _normalize_interactive_cursor_row(lines: list[str], cursor_row: int) -> int:
+    if 0 <= cursor_row < len(lines) and _cursor_line(lines, cursor_row).strip() == "Ok":
+        next_row = cursor_row + 1
+        if next_row < len(lines) and not _cursor_line(lines, next_row).strip():
+            return next_row
+    return cursor_row
+
+
 def _post_run_prompt_visible(lines: list[str], cursor_row: int) -> bool:
     return _last_non_empty_line_before_cursor(lines, cursor_row).strip() == "Ok"
 
@@ -120,12 +133,12 @@ def _last_row_with_text(lines: list[str], cursor_row: int, text: str) -> int | N
 def _looks_like_source_listing(text: str) -> bool:
     import re
 
-    match = re.match(r"^\s*\d+\s*(.*)$", text)
+    match = re.match(r"^\s*(\d+)(?:\s+(.*))?$", text)
     if match is None:
         return False
-    body = match.group(1).upper()
+    body = (match.group(2) or "").upper()
     if not body:
-        return True
+        return False
     if any(keyword in body for keyword in _SOURCE_LISTING_KEYWORDS):
         return True
     return any(token in body for token in ("=", "+", "-", "*", "/", "(", ")", ":", "<", ">"))
@@ -142,6 +155,56 @@ def _looks_like_wrapped_listing_fragment(text: str) -> bool:
     return False
 
 
+def _looks_like_source_fragment(text: str) -> bool:
+    upper = text.strip().upper()
+    if len(upper) < _SOURCE_FRAGMENT_MIN_LENGTH:
+        return False
+    if any(keyword in upper for keyword in _SOURCE_LISTING_KEYWORDS):
+        return True
+    if any(keyword in upper for keyword in ("NEXT", "VARPTR", "PEEK", "POKE", "HEX$", "ATN")):
+        return True
+    return any(token in upper for token in (":", "(", ")", "=", "<", ">", "+", "-", "*", "/"))
+
+
+def _looks_like_loaded_source_fragment(text: str, loaded_lines: list[str]) -> bool:
+    stripped = text.strip()
+    if not _looks_like_source_fragment(stripped):
+        return False
+
+    for loaded_line in loaded_lines:
+        candidate = loaded_line.strip()
+        if not candidate:
+            continue
+        if stripped in candidate:
+            return True
+        match = re.match(r"^\s*\d+\s*(.*)$", candidate)
+        if match is not None:
+            body = match.group(1).strip()
+            if body and stripped in body:
+                return True
+    return False
+
+
+def _build_ignored_source_lines(loaded_lines: list[str]) -> set[str]:
+    ignored = {line.strip() for line in loaded_lines if line.strip()}
+    for loaded_line in loaded_lines:
+        candidate = loaded_line.strip()
+        if not candidate:
+            continue
+        variants = [candidate]
+        match = re.match(r"^\s*\d+\s*(.*)$", candidate)
+        if match is not None:
+            body = match.group(1).strip()
+            if body:
+                variants.append(body)
+        for variant in variants:
+            for start in range(1, len(variant)):
+                fragment = variant[start:].strip()
+                if _looks_like_source_fragment(fragment):
+                    ignored.add(fragment)
+    return ignored
+
+
 class ScreenTracker:
     """Track cursor-line progress for the interactive terminal view."""
 
@@ -149,20 +212,41 @@ class ScreenTracker:
         self._previous_lines: list[str] | None = None
         self._previous_cursor_row = 0
 
+    def seed(self, lines: list[str], cursor_row: int) -> None:
+        self._previous_lines = list(lines)
+        self._previous_cursor_row = cursor_row
+
     def update(self, lines: list[str], cursor_row: int) -> list[tuple[str, str]]:
         events: list[tuple[str, str]] = []
         if self._previous_lines is not None:
-            previous_cursor_line = _cursor_line(
-                self._previous_lines, self._previous_cursor_row
-            ).rstrip()
-            if (
-                cursor_row != self._previous_cursor_row
-                and previous_cursor_line.strip()
-                and previous_cursor_line.strip() != "Ok"
-            ):
-                events.append(("line", previous_cursor_line))
+            if cursor_row > self._previous_cursor_row:
+                start_row = max(0, self._previous_cursor_row - 1)
+                for row in range(start_row, min(cursor_row, len(lines))):
+                    completed_line = lines[row].rstrip()
+                    if completed_line.strip():
+                        events.append(("line", completed_line))
+            else:
+                previous_cursor_line = _cursor_line(
+                    self._previous_lines, self._previous_cursor_row
+                ).rstrip()
+                if (
+                    cursor_row != self._previous_cursor_row
+                    and previous_cursor_line.strip()
+                    and previous_cursor_line.strip() != "Ok"
+                ):
+                    events.append(("line", previous_cursor_line))
 
-        cursor_text = _cursor_line(lines, cursor_row).rstrip()
+        cursor_text = _cursor_line(lines, cursor_row)
+        if (
+            cursor_row == self._previous_cursor_row
+            and not cursor_text.strip()
+            and cursor_row > 0
+        ):
+            candidate = lines[cursor_row - 1]
+            if candidate.strip() and candidate.strip() not in {"Ok", _FUNCTION_KEY_GUIDE}:
+                cursor_text = candidate
+        if not cursor_text.strip():
+            cursor_text = ""
         events.append(("cursor", cursor_text))
         self._previous_lines = list(lines)
         self._previous_cursor_row = cursor_row
@@ -253,6 +337,26 @@ def _emit_events(events: list[tuple[str, str]]) -> None:
             print(text)
 
 
+def _startup_terminal_render(lines: list[str], cursor_row: int) -> str:
+    if _screen_ready_for_input(lines, cursor_row):
+        return "Ok\r\n"
+    return ""
+
+
+def _interactive_echo_key(text: str) -> str:
+    return text.strip().casefold()
+
+
+def _normalize_interactive_completed_line(text: str) -> str | None:
+    completed = text.rstrip()
+    stripped = completed.strip()
+    if not stripped:
+        return None
+    if stripped.casefold() == "ok":
+        return "Ok"
+    return completed
+
+
 def run_loop(bridge: OpenMSXBridge, terminal: "RawTerminal") -> None:  # type: ignore[name-defined]
     """Run the interactive terminal loop until the user exits.
 
@@ -262,6 +366,14 @@ def run_loop(bridge: OpenMSXBridge, terminal: "RawTerminal") -> None:  # type: i
     tracker = ScreenTracker()
     last_poll = 0.0
     current_cursor_line = ""
+    local_input_line = ""
+    pending_submitted_line: str | None = None
+    try:
+        initial_lines, initial_cursor_row = _get_screen_state(bridge, timeout=1.0)
+    except TimeoutError:
+        initial_lines, initial_cursor_row = [""] * 24, 0
+    initial_cursor_row = _normalize_interactive_cursor_row(initial_lines, initial_cursor_row)
+    tracker.seed(initial_lines, initial_cursor_row)
 
     while True:
         now = time.monotonic()
@@ -275,7 +387,7 @@ def run_loop(bridge: OpenMSXBridge, terminal: "RawTerminal") -> None:  # type: i
                 return
 
             if byte == 0x03:  # Ctrl-C → send Break to MSX
-                bridge.type_text("\\b")  # openMSX uses \\b for Break? Actually STOP key
+                bridge.type_text("\\b", via_keybuf=True, timeout=_INTERACTIVE_INPUT_TIMEOUT)
                 # Send Ctrl-C as a regular character; MSX BASIC interprets it
                 bridge.command_nowait("keymatrixdown 6 4")  # STOP key row 6 bit 4
                 time.sleep(0.05)
@@ -283,9 +395,17 @@ def run_loop(bridge: OpenMSXBridge, terminal: "RawTerminal") -> None:  # type: i
                 continue
 
             if byte == 0x0D or byte == 0x0A:  # Enter
-                bridge.type_text(_ENTER)
+                bridge.type_text(_ENTER, via_keybuf=True, timeout=_INTERACTIVE_INPUT_TIMEOUT)
+                terminal.write("\r\n")
+                pending_submitted_line = local_input_line
+                local_input_line = ""
+                current_cursor_line = ""
             elif byte == 0x7F or byte == 0x08:  # Backspace / DEL
-                bridge.type_text(_BACKSPACE)
+                bridge.type_text(_BACKSPACE, via_keybuf=True, timeout=_INTERACTIVE_INPUT_TIMEOUT)
+                if local_input_line:
+                    local_input_line = local_input_line[:-1]
+                    terminal.write("\b \b")
+                    current_cursor_line = local_input_line
             elif byte == 0x1B:  # Escape – eat it (could be ANSI sequence)
                 # Drain any ANSI sequence bytes
                 time.sleep(0.02)
@@ -295,9 +415,12 @@ def run_loop(bridge: OpenMSXBridge, terminal: "RawTerminal") -> None:  # type: i
                 char = chr(byte)
                 # Escape special Tcl/openMSX type characters
                 if char in ('"', "\\"):
-                    bridge.type_text(f"\\{char}")
+                    bridge.type_text(f"\\{char}", via_keybuf=True, timeout=_INTERACTIVE_INPUT_TIMEOUT)
                 else:
-                    bridge.type_text(char)
+                    bridge.type_text(char, via_keybuf=True, timeout=_INTERACTIVE_INPUT_TIMEOUT)
+                terminal.write(char)
+                local_input_line += char
+                current_cursor_line = local_input_line
             # ignore other control codes
 
         # ---- Poll MSX screen ----
@@ -307,16 +430,36 @@ def run_loop(bridge: OpenMSXBridge, terminal: "RawTerminal") -> None:  # type: i
                 lines, cursor_row = _get_screen_state(bridge, timeout=1.0)
             except TimeoutError:
                 continue
+            cursor_row = _normalize_interactive_cursor_row(lines, cursor_row)
 
             events = tracker.update(lines, cursor_row)
 
             for kind, text in events:
                 if kind == "line":
+                    normalized_text = _normalize_interactive_completed_line(text)
+                    if normalized_text is None:
+                        continue
+                    if (
+                        pending_submitted_line is not None
+                        and _interactive_echo_key(normalized_text)
+                        == _interactive_echo_key(pending_submitted_line)
+                    ):
+                        pending_submitted_line = None
+                        continue
+                    pending_submitted_line = None
                     # Overwrite the current cursor line with the completed line,
                     # then move to the next line
-                    terminal.write(f"\r{text}\r\n")
+                    terminal.write(f"\r{normalized_text}\r\n")
                     current_cursor_line = ""
                 elif kind == "cursor":
+                    if local_input_line:
+                        continue
+                    if pending_submitted_line is not None:
+                        if _interactive_echo_key(text) == _interactive_echo_key(pending_submitted_line):
+                            continue
+                        if text.strip() or not _screen_ready_for_input(lines, cursor_row):
+                            continue
+                        pending_submitted_line = None
                     if text != current_cursor_line:
                         terminal.write(f"\r{text}")
                         # Erase to end of line in case text got shorter
@@ -383,11 +526,24 @@ def run_interactive(bridge: OpenMSXBridge) -> None:
             "(wrong machine, missing ROM, or slow boot). Continuing anyway.",
             flush=True,
         )
-    else:
-        print("MSX-BASIC ready.\r", flush=True)
-
     with RawTerminal() as terminal:
-        run_loop(bridge, terminal)
+        terminal.write(_SHOW_CURSOR)
+        terminal.write(_BLINK_BLOCK_CURSOR)
+        try:
+            if booted:
+                terminal.write("MSX-BASIC ready.\r\n")
+            try:
+                lines, cursor_row = _get_screen_state(bridge, timeout=1.0)
+            except TimeoutError:
+                lines, cursor_row = [""] * 24, 0
+            cursor_row = _normalize_interactive_cursor_row(lines, cursor_row)
+            startup_render = _startup_terminal_render(lines, cursor_row)
+            if startup_render:
+                terminal.write(startup_render)
+            run_loop(bridge, terminal)
+        finally:
+            terminal.write(_RESET_CURSOR_STYLE)
+            terminal.write(_SHOW_CURSOR)
 
 
 def _configure_batch_speed(bridge: OpenMSXBridge) -> None:
@@ -413,7 +569,7 @@ def run_batch(bridge: OpenMSXBridge, program: Path) -> int:
         bridge,
         initial_lines=initial_lines,
         initial_cursor_row=initial_cursor_row,
-        ignored_lines={line.strip() for line in loaded_lines},
+        ignored_lines=_build_ignored_source_lines(loaded_lines),
     )
     _print_batch_result(output_lines, loaded_lines)
     return 0
@@ -436,7 +592,7 @@ def run_loaded_batch(bridge: OpenMSXBridge, program: Path) -> int:
         bridge,
         initial_lines=initial_lines,
         initial_cursor_row=initial_cursor_row,
-        ignored_lines={line.strip() for line in loaded_lines},
+        ignored_lines=_build_ignored_source_lines(loaded_lines),
     )
     _print_batch_result(output_lines, loaded_lines)
     return 0
@@ -583,7 +739,7 @@ def _type_text_chunks(bridge: OpenMSXBridge, text: str) -> None:
 def _type_text_chunk(bridge: OpenMSXBridge, chunk: str) -> None:
     """Type one chunk, splitting it if keybuf injection times out."""
     try:
-        bridge.type_text(chunk, timeout=_BATCH_INPUT_TIMEOUT)
+        bridge.type_text(chunk, via_keybuf=True, timeout=_BATCH_INPUT_TIMEOUT)
     except TimeoutError:
         if len(chunk) <= 1:
             raise
@@ -669,6 +825,9 @@ def _drain_until_prompt(
 def _print_batch_result(lines: list[str], loaded_lines: list[str]) -> None:
     source_lines = {line.strip() for line in loaded_lines}
     for line in lines:
-        if line.strip() in source_lines:
+        stripped = line.strip()
+        if stripped in source_lines:
+            continue
+        if _looks_like_loaded_source_fragment(stripped, loaded_lines):
             continue
         print(line)

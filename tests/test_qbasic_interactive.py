@@ -5,14 +5,16 @@ import pty
 import select
 import signal
 import stat
+import io
+import re
 import subprocess
 import tempfile
 import termios
 import textwrap
 import time
-import tty
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -43,10 +45,54 @@ def _read_until(master_fd: int, needle: bytes, *, timeout: float) -> bytes:
 
 
 class QBasicInteractiveTests(unittest.TestCase):
-    def test_plain_interactive_launch_exits_on_ctrl_d(self) -> None:
+    def test_direct_statements_preserve_state_across_commands(self) -> None:
+        import qbasic_interactive
+
+        shell = qbasic_interactive.QBasicTextShell(
+            archive_path="archive.zip",
+            runtime_dir="/tmp/runtime",
+            home_dir="/tmp/home",
+            file_path=None,
+        )
+
+        def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            del kwargs
+            source_path = Path(args[-1])
+            source_text = source_path.read_text(encoding="ascii")
+            begin_match = re.search(r'PRINT "(__CLASSIC_BASIC_BEGIN_[0-9]+__)"', source_text)
+            end_match = re.search(r'PRINT "(__CLASSIC_BASIC_END_[0-9]+__)"', source_text)
+            begin_marker = begin_match.group(1) if begin_match else ""
+            end_marker = end_match.group(1) if end_match else ""
+            if "PRINT A" in source_text:
+                self.assertIn("A=4*ATN(1)", source_text)
+                stdout_text = f"{begin_marker}\n3.14159265358979\n{end_marker}\n"
+            else:
+                stdout_text = f"{begin_marker}\n{end_marker}\n"
+            return subprocess.CompletedProcess(
+                args=["bash", "run/qbasic.sh"],
+                returncode=0,
+                stdout=stdout_text,
+                stderr="",
+            )
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch("dos_text_shell.subprocess.run", side_effect=fake_run), patch("sys.stdout", stdout), patch(
+            "sys.stderr", stderr
+        ):
+            shell._handle_command("A=4*ATN(1)")
+            shell._handle_command("PRINT A")
+
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertIn("3.14159265358979", stdout.getvalue())
+        self.assertNotIn("__CLASSIC_BASIC_BEGIN_", stdout.getvalue())
+        self.assertEqual(shell.direct_history, ["A=4*ATN(1)", "PRINT A"])
+
+    def test_plain_interactive_launch_uses_text_shell_and_exits_on_ctrl_d(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
             env, _ = self._make_test_env(temp_path)
+            env["FAKE_DOS_CAPTURE_CONTENT"] = " 4 \r\n"
 
             proc, master_fd = self._spawn_pty(
                 env=env,
@@ -58,10 +104,14 @@ class QBasicInteractiveTests(unittest.TestCase):
                     "--home",
                     str(temp_path / "home"),
                 ],
+                rows=20,
+                cols=60,
             )
 
             try:
-                output = _read_until(master_fd, b"Immediate", timeout=10)
+                startup = _read_until(master_fd, b"QBasic> ", timeout=10)
+                os.write(master_fd, b"PRINT 2+2\r")
+                output = _read_until(master_fd, b"QBasic> ", timeout=10)
                 os.write(master_fd, b"\x04")
                 proc.wait(timeout=10)
             finally:
@@ -71,12 +121,16 @@ class QBasicInteractiveTests(unittest.TestCase):
                     proc.wait(timeout=10)
 
             self.assertEqual(proc.returncode, 0)
-            self.assertIn(b"Immediate", output)
+            self.assertIn(b"QBasic text shell", startup)
+            self.assertIn(b"4\r\nQBasic>", output)
+            self.assertNotIn(b"Welcome to MS-DOS QBasic", output)
+            self.assertNotIn(b"File QBASIC.HLP not found.", output)
 
     def test_loaded_interactive_launch_runs_program_then_exits_on_ctrl_d(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
             env, runtime_dir = self._make_test_env(temp_path)
+            env["FAKE_DOS_CAPTURE_CONTENT"] = "PROGRAM OUTPUT\r\n"
             program_path = temp_path / "demo.bas"
             program_path.write_bytes(b'10 PRINT "HELLO"\r20 END\r')
 
@@ -95,9 +149,9 @@ class QBasicInteractiveTests(unittest.TestCase):
             )
 
             try:
-                _read_until(master_fd, b"LOADED", timeout=10)
+                startup = _read_until(master_fd, b"QBasic> ", timeout=10)
                 os.write(master_fd, b"RUN\r")
-                output = _read_until(master_fd, b"PROGRAM OUTPUT", timeout=10)
+                output = _read_until(master_fd, b"QBasic> ", timeout=10)
                 os.write(master_fd, b"\x04")
                 proc.wait(timeout=10)
             finally:
@@ -107,11 +161,46 @@ class QBasicInteractiveTests(unittest.TestCase):
                     proc.wait(timeout=10)
 
             self.assertEqual(proc.returncode, 0)
+            self.assertIn(b"Loaded 2 line(s)", startup)
             self.assertIn(b"PROGRAM OUTPUT", output)
+            self.assertNotIn(b"Welcome to MS-DOS QBasic", output)
             self.assertEqual(
                 (runtime_dir / "drive_c" / "RUNFILE.BAS").read_bytes(),
                 b'10 PRINT "HELLO"\r\n20 END\r\n',
             )
+
+    def test_small_terminal_is_allowed_in_text_shell_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, _ = self._make_test_env(temp_path)
+
+            proc, master_fd = self._spawn_pty(
+                env=env,
+                args=[
+                    "bash",
+                    "run/qbasic.sh",
+                    "--runtime",
+                    str(temp_path / "runtime"),
+                    "--home",
+                    str(temp_path / "home"),
+                ],
+                rows=10,
+                cols=40,
+            )
+
+            try:
+                output = _read_until(master_fd, b"QBasic> ", timeout=10)
+                os.write(master_fd, b"\x04")
+                proc.wait(timeout=10)
+            finally:
+                os.close(master_fd)
+                if proc.poll() is None:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    proc.wait(timeout=10)
+
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn(b"QBasic text shell", output)
+            self.assertNotIn(b"requires a terminal of at least", output)
 
     def _make_test_env(self, temp_path: Path) -> tuple[dict[str, str], Path]:
         bin_dir = temp_path / "bin"
@@ -129,6 +218,7 @@ class QBasicInteractiveTests(unittest.TestCase):
         env["CLASSIC_BASIC_DOSEMU_SEM_SHIM"] = "off"
         env["CLASSIC_BASIC_QBASIC_ARCHIVE"] = str(downloads_dir / "qbasic-1.1.zip")
         env["CLASSIC_BASIC_QBASIC_EXE"] = str(downloads_dir / "QBASIC.EXE")
+        env["PYTHONPATH"] = str(ROOT_DIR / "src")
         return env, runtime_dir
 
     def _spawn_pty(
@@ -136,8 +226,12 @@ class QBasicInteractiveTests(unittest.TestCase):
         *,
         env: dict[str, str],
         args: list[str],
+        rows: int = 25,
+        cols: int = 80,
     ) -> tuple[subprocess.Popen[bytes], int]:
         master_fd, slave_fd = pty.openpty()
+        self._set_winsize(slave_fd, rows, cols)
+        self._set_winsize(master_fd, rows, cols)
         proc = subprocess.Popen(
             args,
             cwd=ROOT_DIR,
@@ -150,52 +244,45 @@ class QBasicInteractiveTests(unittest.TestCase):
         os.close(slave_fd)
         return proc, master_fd
 
+    def _set_winsize(self, fd: int, rows: int, cols: int) -> None:
+        try:
+            termios.tcsetwinsize(fd, (rows, cols))
+        except (AttributeError, OSError):
+            pass
+
     def _write_fake_commands(self, bin_dir: Path) -> None:
         _write_executable(
             bin_dir / "dosemu",
-            """#!/usr/bin/env python3
-import os
-import sys
-import termios
-import tty
-
-dos_command = ""
-args = sys.argv[1:]
-index = 0
-while index < len(args):
-    if args[index] == "-E":
-        dos_command = args[index + 1]
-        index += 2
-    else:
-        index += 1
-
-if dos_command == "qbasic RUNFILE.BAS":
-    sys.stdout.write("LOADED\\r\\n")
-sys.stdout.write("Immediate\\r\\n")
-sys.stdout.flush()
-
-original_attrs = termios.tcgetattr(sys.stdin.fileno())
-tty.setraw(sys.stdin.fileno())
-
-buffer = bytearray()
-try:
-    while True:
-        chunk = os.read(sys.stdin.fileno(), 1)
-        if not chunk:
-            break
-        buffer.extend(chunk)
-        upper = bytes(buffer).upper()
-        if b"RUN\\r" in upper:
-            sys.stdout.write("PROGRAM OUTPUT\\r\\n")
-            sys.stdout.flush()
-            buffer.clear()
-        elif b"SYSTEM\\r" in upper:
-            break
-finally:
-    termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, original_attrs)
-
-sys.exit(0)
-""",
+            """#!/usr/bin/env bash
+            set -euo pipefail
+            drive_c=''
+            dos_command=''
+            while [[ $# -gt 0 ]]; do
+              case "$1" in
+                --Fdrive_c)
+                  drive_c="$2"
+                  shift 2
+                  ;;
+                -E)
+                  dos_command="$2"
+                  shift 2
+                  ;;
+                *)
+                  shift
+                  ;;
+              esac
+            done
+            if [[ -n "${FAKE_DOS_CAPTURE_CONTENT:-}" ]]; then
+              capture_name=''
+              if [[ -n "${drive_c}" && -f "${drive_c}/${dos_command}.BAT" ]]; then
+                capture_name=$(grep -oi '> [A-Z0-9.]*' "${drive_c}/${dos_command}.BAT" | head -1 | cut -c3-)
+              fi
+              if [[ -n "${capture_name}" ]]; then
+                printf '%s' "${FAKE_DOS_CAPTURE_CONTENT}" >"${drive_c}/${capture_name}"
+              fi
+            fi
+            exit 0
+            """,
         )
         for command_name in ("curl", "7z", "mcopy"):
             _write_executable(

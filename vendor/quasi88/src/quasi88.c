@@ -1,37 +1,33 @@
 /************************************************************************/
-/* QUASI88 --- PC-8801 emulator						*/
-/*	Copyright (c) 1998-2012 Showzoh Fukunaga			*/
-/*	All rights reserved.						*/
-/*									*/
-/*	  このソフトは、UNIX + X Window System の環境で動作する、	*/
-/*	PC-8801 のエミュレータです。					*/
-/*									*/
-/*	  このソフトの作成にあたり、Marat Fayzullin氏作の fMSX、	*/
-/*	Nicola Salmoria氏 (MAME/XMAME project) 作の MAME/XMAME、	*/
-/*	ゆみたろ氏作の PC6001V のソースを参考にさせてもらいました。	*/
-/*									*/
-/*	＊注意＊							*/
-/*	  サウンドドライバは、MAME/XMAME のソースを流用しています。	*/
-/*	この部分のソースの著作権は、MAME/XMAME チームあるいはソースに	*/
-/*	記載してある著作者にあります。					*/
-/*	  FM音源ジェネレータは、fmgen のソースを流用しています。	*/
-/*	この部分のソースの著作権は、 cisc氏 にあります。		*/
-/*									*/
+/* QUASI88 --- PC-8801 emulator                                         */
+/*      Copyright (c) 1998-2024 Showzoh Fukunaga                        */
+/*      All rights reserved.                                            */
+/*                                                                      */
+/*        このソフトは SDL2 環境で動作する PC-8801 のエミュレータです。 */
+/*                                                                      */
+/*        このソフトの作成にあたり、Marat Fayzullin氏作の fMSX、        */
+/*      Nicola Salmoria氏 (MAME/XMAME project) 作の MAME/XMAME、        */
+/*      ゆみたろ氏作の PC6001V のソースを参考にさせてもらいました。     */
+/*                                                                      */
+/*      ＊注意＊                                                        */
+/*        サウンドドライバは、MAME/XMAME のソースを流用しています。     */
+/*      この部分のソースの著作権は、MAME/XMAME チームあるいはソースに   */
+/*      記載してある著作者にあります。                                  */
+/*        FM音源ジェネレータは、fmgen のソースを流用しています。        */
+/*      この部分のソースの著作権は、 cisc氏 にあります。                */
+/*                                                                      */
 /************************************************************************/
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <ctype.h>
 
 #include "quasi88.h"
-#include "initval.h"
+#include "fname.h"
+#include "debug.h"
 
 #include "pc88main.h"
 #include "pc88sub.h"
-#include "graph.h"
 #include "memory.h"
-#include "file-op.h"
 
 #include "emu.h"
 #include "drive.h"
@@ -40,243 +36,245 @@
 #include "monitor.h"
 #include "snddrv.h"
 #include "wait.h"
-#include "status.h"
+#include "statusbar.h"
+#include "toolbar.h"
 #include "suspend.h"
-#include "menu.h"
-
-/* Control bridge for headless automation (Phase 25) */
-#include "run_control_bridge.h"
-
-/* exec_state clearing for stale state prevention */
-#include "emu.h"
 #include "snapshot.h"
-#include "soundbd.h"
 #include "screen.h"
+#include "menu.h"
 #include "pause.h"
 #include "z80.h"
 #include "intr.h"
-#include "keyboard.h"
+#include "run_control_bridge.h"
+
+#include "alarm.h"
+#include "q8tk.h"
 
 
-int	verbose_level	= DEFAULT_VERBOSE;	/* 冗長レベル		*/
-int	verbose_proc    = FALSE;		/* 処理の進行状況の表示	*/
-int	verbose_z80	= FALSE;		/* Z80処理エラーを表示	*/
-int	verbose_io	= FALSE;		/* 未実装I/Oアクセス表示*/
-int	verbose_pio	= FALSE;		/* PIO の不正使用を表示 */
-int	verbose_fdc	= FALSE;		/* FDイメージ異常を報告	*/
-int	verbose_wait	= FALSE;		/* ウエイト時の異常を報告 */
-int	verbose_suspend = FALSE;		/* サスペンド時の異常を報告 */
-int	verbose_snd	= FALSE;		/* サウンドのメッセージ	*/
+int verbose_level   = DEFAULT_VERBOSE;		/* 冗長レベル */
+int verbose_proc    = FALSE;				/* 処理の進行状況の表示 */
+int verbose_z80     = FALSE;				/* Z80処理エラーを表示 */
+int verbose_io      = FALSE;				/* 未実装I/Oアクセス報告 */
+int verbose_pio     = FALSE;				/* PIO の不正使用を表示 */
+int verbose_fdc     = FALSE;				/* FDイメージ異常を報告 */
+int verbose_wait    = FALSE;				/* ウエイト時の異常を報告 */
+int verbose_suspend = FALSE;				/* サスペンド時の異常を報告 */
+int verbose_snd     = FALSE;				/* サウンドのメッセージ */
 
-static	void	imagefile_all_open(int stateload);
-static	void	imagefile_all_close(void);
-static	void	status_override(void);
+static int stateload_or_skip_at_startup(void);
+static void quasi88_stop_core(void);
+static void status_message_at_startup(void);
+
+#define VERBOSE_PROC_PRINTF(str)	if (verbose_proc) printf(str); fflush(NULL)
+#define ERROR_PRINTF(str)			fprintf(stderr, str)
 
 /***********************************************************************
  *
- *			QUASI88 メイン関数
+ *                      QUASI88 メイン関数
  *
  ************************************************************************/
-void	quasi88(void)
+void quasi88(void)
 {
-    quasi88_start();
-    quasi88_main();
-    quasi88_stop(TRUE);
+	quasi88_start();
+	quasi88_main();
+	quasi88_stop();
 }
 
-/* =========================== メイン処理の初期化 ========================== */
+/* メイン処理の初期化 ===================================================== */
+static int proc = 0;
 
-#define	SET_PROC(n)	proc = n; if (verbose_proc) printf("\n"); fflush(NULL);
-static	int	proc = 0;
-
-void	quasi88_start(void)
+void quasi88_start(void)
 {
-    stateload_init();			/* ステートロード関連初期化	*/
-    drive_init();			/* ディスク制御のワーク初期化	*/
-    /* ↑ これらは、ステートロード開始までに初期化しておくこと		*/
+	stateload_init();                   /* ステートロード関連初期化 */
+	drive_init();                       /* ディスク制御のワーク初期化 */
+	/* ↑ これらは、ステートロード開始までに初期化しておくこと */
 
-    SET_PROC(1);
+	/* タイマー初期化 */
+	proc = 0;
+	if (wait_vsync_init()) {
 
-					/* エミュレート用メモリの確保	*/
-    if (memory_allocate() == FALSE) { quasi88_exit(-1); }
+		alarm_init();
+		q8tk_init();
+		submenu_init();
+		statusbar_init();
 
-    if (resume_flag) {			/* ステートロード		*/
-	SET_PROC(2);
-	if (stateload() == FALSE) {
-	    fprintf(stderr, "stateload: Failed ! (filename = %s)\n",
-		    filename_get_state());
-	    quasi88_exit(-1);
-	}
-	if (verbose_proc) printf("Stateload...OK\n"); fflush(NULL);
-    }
-    SET_PROC(3);
+		/* エミュ用メモリ初期化 */
+		proc = 1;
+		if (memory_allocate()) {
 
-					/* グラフィックシステム初期化	*/
-    if (screen_init() == FALSE) { quasi88_exit(-1); }
-    SET_PROC(4);
+			/* 起動時のステートロード処理 */
+			proc = 2;
+			if (stateload_or_skip_at_startup()) {
 
-					/* システムイベント初期化	*/
-    event_init();			/* (screen_init の後で！)	*/
+				status_message_at_startup();
 
-    					/* サウンドドライバ初期化	*/
-    if (xmame_sound_start() == FALSE) {	quasi88_exit(-1); }
-    SET_PROC(5);
+				/* グラフィックシステム初期化 */
+				proc = 3;
+				if (screen_init()) {
 
-   					/* ウエイト用タイマー初期化	*/
-    if (wait_vsync_init() == FALSE) { quasi88_exit(-1); }
-    SET_PROC(6);
+					/* システムイベント初期化 (screen_init の後で！) */
+					event_init();
 
+					/* サウンドドライバ初期化 */
+					proc = 4;
+					if (xmame_sound_start()) {
 
-    set_signal();			/* INTシグナルの処理を設定	*/
+						proc = 5;
 
-    imagefile_all_open(resume_flag);	/* イメージファイルを全て開く	*/
+						set_signal();						/* INTシグナルの処理を設定 */
+						imagefile_all_open(resume_flag);	/* イメージファイルを全て開く */
 
-    					/* エミュ用ワークを順次初期化	*/
-    pc88main_init((resume_flag) ? INIT_STATELOAD : INIT_POWERON);
-    pc88sub_init ((resume_flag) ? INIT_STATELOAD : INIT_POWERON);
+						/* エミュ用ワークを順次初期化   */
+						pc88main_init((resume_flag) ? INIT_STATELOAD : INIT_POWERON);
+						pc88sub_init((resume_flag) ? INIT_STATELOAD : INIT_POWERON);
 
-    key_record_playback_init();		/* キー入力記録/再生 初期化	*/
+						key_record_playback_init();			/* キー入力記録/再生 初期化 */
+						screen_snapshot_init();				/* スナップショット関連初期化 */
 
-    screen_snapshot_init();		/* スナップショット関連初期化   */
+						debuglog_init();
+						profiler_init();
+						emu_breakpoint_init();
+						bridge_init();
 
+						alarm_reset();
 
-    debuglog_init();
-    profiler_init();
+						VERBOSE_PROC_PRINTF("Running QUASI88...\n");
+						return;
 
-    emu_breakpoint_init();
+					} else {
+						ERROR_PRINTF("sound system initialize failed!\n");
+					}
+				} else {
+					ERROR_PRINTF("graphic system initialize failed!\n");
+				}
+			} else {
 
-    /* Initialize control bridge for headless automation */
-    bridge_init();
-
-    if (verbose_proc) printf("Running QUASI88...\n");
-}
-
-/* ======================== メイン処理のメインループ ======================= */
-
-void	quasi88_main(void)
-{
-    for (;;) {
-
-	/* 終了の応答があるまで、繰り返し呼び続ける */
-
-	if (quasi88_loop() == QUASI88_LOOP_EXIT) {
-	    break;
+			}
+		} else {
+			ERROR_PRINTF("memory allocate failed!\n");
+		}
+	} else {
+		ERROR_PRINTF("timer initialize failed!\n");
 	}
 
-    }
+	quasi88_exit(-1);
+}
 
-    /* quasi88_loop() は、 1フレーム (VSYNC 1周期分≒1/60秒) おきに、
-       QUASI88_LOOP_ONE を返してくる。
-       この戻り値を判断して、なんらかの処理を加えてもよい。
+/* メイン処理のメインループ =============================================== */
 
-       また、内部処理の事情で QUASI88_LOOP_BUSY を返してくることもあるが、
-       この場合は気にせずに、繰り返し呼び出しを続行すること */
+void quasi88_main(void)
+{
+	for (;;) {
+
+		/* 終了の応答があるまで、繰り返し呼び続ける */
+
+		if (quasi88_loop() == QUASI88_LOOP_EXIT) {
+			break;
+		}
+
+	}
+
+	/* quasi88_loop() は、 1フレーム (VSYNC 1周期分≒1/60秒) おきに、
+	   QUASI88_LOOP_ONE を返してくる。
+	   この戻り値を判断して、なんらかの処理を加えてもよい。
+
+	   また、内部処理の事情で QUASI88_LOOP_BUSY を返してくることもあるが、
+	   この場合は気にせずに、繰り返し呼び出しを続行すること */
 
 }
 
-/* ========================== メイン処理の後片付け ========================= */
+/* メイン処理の後片付け =================================================== */
 
-void	quasi88_stop(int normal_exit)
+void quasi88_stop()
 {
-    if (normal_exit) {
-	if (verbose_proc) printf("Shutting down.....\n");
-    }
+	VERBOSE_PROC_PRINTF("Shutting down.....\n");
+	clear_exec_state();
+	bridge_cleanup();
 
-    /* Clear exec state on shutdown to ensure clean state */
-    clear_exec_state();
+	quasi88_stop_core();
+}
 
-    /* Cleanup control bridge */
-    bridge_cleanup();
+static void quasi88_stop_core(void)
+{
+	if (proc >= 1) {
+		if (proc >= 2) {
+			if (proc >= 3) {
+				if (proc >= 4) {
+					if (proc >= 5) {
+						profiler_exit();
+						debuglog_exit();
+						screen_snapshot_exit();
+						key_record_playback_exit();
+						pc88main_term();
+						pc88sub_term();
+						imagefile_all_close();
+						xmame_sound_stop();
+					}
+					/* サウンド初期化でNGの場合、ここから↓ */
+					event_exit();
+					screen_exit();
+				}
+				/* グラフィック初期化でNGの場合、ここから↓ */
+			}
+			/* ステートロード処理でNGの場合、ここから↓ */
+			memory_free();
+		}
+		/* メモリ初期化でNGの場合、ここから↓ */
+		q8tk_exit();
+		alarm_exit();
+		wait_vsync_exit();
+	}
+	/* タイマーの初期化でNGの場合、ここから↓ */
 
-    /* 初期化途中の場合、verbose による詳細表示がなければ、エラー表示する */
-#define ERR_DISP(n)	((proc == (n)) && (verbose_proc == 0))
 
-    switch (proc) {
-    case 6:			/* 初期化 正常に終わっている */
-	profiler_exit();
-	debuglog_exit();
-	screen_snapshot_exit();
-	key_record_playback_exit();
-	pc88main_term();
-	pc88sub_term();
-	imagefile_all_close();
-	wait_vsync_exit();
-	/* FALLTHROUGH */
-
-    case 5:			/* タイマーの初期化でNG */
-	if (ERR_DISP(5)) printf("timer initialize failed!\n");
-	xmame_sound_stop();
-	/* FALLTHROUGH */
-
-    case 4:			/* サウンドの初期化でNG */
-	if (ERR_DISP(4)) printf("sound system initialize failed!\n");
-	event_exit();
-	screen_exit();
-	/* FALLTHROUGH */
-
-    case 3:			/* グラフィックの初期化でNG */
-	if (ERR_DISP(3)) printf("graphic system initialize failed!\n");
-	/* FALLTHROUGH */
-
-    case 2:			/* ステートロードでNG */
-	/* FALLTHROUGH */
-
-    case 1:			/* メモリの初期化でNG */
-	if (ERR_DISP(2)) printf("memory allocate failed!\n");
-	memory_free();
-	/* FALLTHROUGH */
-
-    case 0:			/* 終了処理 すでに完了 */
-	break;
-    }
-
-    proc = 0;	/* この関数を続けて呼んでも問題無いように、クリアしておく */
+	/* この関数を続けて呼んでも問題無いように、クリアしておく */
+	proc = 0;
 }
 
 
 /***********************************************************************
  * QUASI88 途中終了処理関数
- *	exit() の代わりに呼ぼう。
+ *      exit() の代わりに呼ぼう。
  ************************************************************************/
 
-#define	MAX_ATEXIT	(32)
-static	void (*exit_function[MAX_ATEXIT])(void);
+#define MAX_ATEXIT		(32)
+static void (*exit_function[MAX_ATEXIT])(void);
 
 /*
  * 関数を最大 MAX_ATEXIT 個、登録できる。ここで登録した関数は、
  * quasi88_exit() を呼び出した時に、登録した順と逆順で、呼び出される。
  */
-void	quasi88_atexit(void (*function)(void))
+void quasi88_atexit(void (*function)(void))
 {
-    int i;
-    for (i=0; i<MAX_ATEXIT; i++) {
-	if (exit_function[i] == NULL) {
-	    exit_function[i] = function;
-	    return;
+	int i;
+	for (i = 0; i < MAX_ATEXIT; i++) {
+		if (exit_function[i] == NULL) {
+			exit_function[i] = function;
+			return;
+		}
 	}
-    }
-    printf("quasi88_atexit: out of array\n");
-    quasi88_exit(-1);
+	printf("quasi88_atexit: out of array\n");
+	quasi88_exit(-1);
 }
 
 /*
  * quasi88 を強制終了する。
  * quasi88_atexit() で登録した関数を呼び出した後に、 exit() する
  */
-void	quasi88_exit(int status)
+void quasi88_exit(int status)
 {
-    int i;
+	int i;
 
-    quasi88_stop(FALSE);
+	quasi88_stop_core();
 
-    for (i=MAX_ATEXIT-1; i>=0; i--) {
-	if (exit_function[i]) {
-	    (*exit_function[i])();
-	    exit_function[i] = NULL;
+	for (i = MAX_ATEXIT - 1; i >= 0; i--) {
+		if (exit_function[i]) {
+			(*exit_function[i])();
+			exit_function[i] = NULL;
+		}
 	}
-    }
 
-    exit(status);
+	exit(status);
 }
 
 
@@ -285,1011 +283,412 @@ void	quasi88_exit(int status)
 
 /***********************************************************************
  * QUASI88メインループ制御
- *	QUASI88_LOOP_EXIT が返るまで、無限に呼び出すこと。
+ *      QUASI88_LOOP_EXIT が返るまで、無限に呼び出すこと。
  * 戻り値
- *	QUASI88_LOOP_EXIT … 終了時
- *	QUASI88_LOOP_ONE  … 1フレーム経過時 (ウェイトが正確ならば約1/60秒周期)
- *	QUASI88_LOOP_BUSY … 上記以外の、なんらかのタイミング
+ *      QUASI88_LOOP_EXIT … 終了時
+ *      QUASI88_LOOP_ONE  … 1フレーム経過時 (ウェイトが正確ならば約1/60秒周期)
+ *      QUASI88_LOOP_BUSY … 上記以外の、なんらかのタイミング
  ************************************************************************/
-int	quasi88_event_flags = EVENT_MODE_CHANGED;
-static	int mode	= EXEC;		/* 現在のモード */
-static	int next_mode	= EXEC;		/* モード切替要求時の、次モード */
 
-int	quasi88_loop(void)
+#define EXEC			0x00
+#define MONITOR			0x10
+#define MENU			0x20
+#define QUIT			0x30
+#define MAJOR_MODE		0xf0
+#define MINOR_MODE		0x0f
+
+int quasi88_event_flags = EVENT_MODE_CHANGED;
+static int mode         = EXEC;				/* 現在のモード */
+static int next_mode    = EXEC;				/* モード切替要求時の、次モード */
+
+int quasi88_loop(void)
 {
-    static enum {
-	INIT,
-	MAIN,
-	WAIT,
-    } step = INIT, step_after_wait = INIT;
+	static int init_done = FALSE;
+	int do_wait = FALSE;
+	int major_mode = mode & MAJOR_MODE;
 
-    int stat;
+	/* イニシャル処理 ================================================= */
+	if (init_done == FALSE) {
+		profiler_lapse(PROF_LAPSE_RESET);
 
-    switch (step) {
+		/* モード変更時は、必ずイニシャルが必要。モード変更フラグをクリア */
+		quasi88_event_flags &= ~EVENT_MODE_CHANGED;
+		mode = next_mode;
+		major_mode = mode & MAJOR_MODE;
 
-    /* ======================== イニシャル処理 ======================== */
-    case INIT:
-	profiler_lapse( PROF_LAPSE_RESET );
-
-	/* モード変更時は、必ずここに来る。モード変更フラグをクリア */
-	quasi88_event_flags &= ~EVENT_MODE_CHANGED;
-	mode = next_mode;
-
-	/* 例外的なモード変更時の処理 */
-	switch (mode) {
-#ifndef	USE_MONITOR
-	case MONITOR:	/* ありえないけど、念のため */
-	    mode = PAUSE;
-	    break;
-#endif
-	case QUIT:	/* QUIT なら、メインループ終了 */
-	    return FALSE;
-	}
-
-	/* モード別イニシャル処理 */
-	if (mode == EXEC) { xmame_sound_resume(); }
-	else              { xmame_sound_suspend();}
-
-	screen_switch();
-	event_switch();
-	keyboard_switch();
-
-	switch (mode) {
-	case EXEC:	emu_init();		break;
-
-	case MENU:	menu_init();		break;
-#ifdef	USE_MONITOR
-	case MONITOR:	monitor_init();		break;
-#endif
-	case PAUSE:	pause_init();		break;
-	}
-
-	status_override();
-
-	wait_vsync_switch();
-
-
-	/* イニシャル処理が完了したら、MAIN に遷移 */
-	step = MAIN;
-
-	/* 遷移するため、一旦関数を抜ける (FALLTHROUGHでもいいけど) */
-	return QUASI88_LOOP_BUSY;
-
-
-    /* ======================== メイン処理 ======================== */
-    case MAIN:
-	/* Control bridge command processing must run before monitor_main(),
-	   otherwise monitor stdin blocking can starve the dedicated bridge. */
-	bridge_accept_client();
-	{
-	    char cmd_buf[1024];
-	    bridge_response_t resp;
-	    int len = bridge_receive_command(cmd_buf, sizeof(cmd_buf));
-	    if (len > 0) {
-		int result = bridge_process_command(cmd_buf, &resp);
-		(void)result; /* suppress unused warning */
-		bridge_send_response(&resp);
-	    }
-	}
-
-	switch (mode) {
-
-	case EXEC:	profiler_lapse( PROF_LAPSE_RESET );
-			emu_main();		break;
-#ifdef	USE_MONITOR
-	case MONITOR:	if (!bridge_is_bridge_only_mode() && !bridge_has_client()) {
-			    monitor_main();
-			}
+		/* 例外的なモード変更時の処理 */
+		switch (mode) {
+#ifndef USE_MONITOR
+		case MONITOR:	/* ありえないけど、念のため */
+			mode = MENU | MENU_MODE_PAUSE;
+			major_mode = mode & MAJOR_MODE;
 			break;
 #endif
-	case MENU:	menu_main();		break;
+		case QUIT:		/* QUIT なら、メインループ終了 */
+			return QUASI88_LOOP_EXIT;
+		}
 
-	case PAUSE:	pause_main();		break;
+		/* モード別イニシャル処理 */
+		if (major_mode == EXEC) {
+			xmame_sound_resume();
+		} else                    {
+			xmame_sound_suspend();
+		}
+
+		quasi88_set_status();
+
+		screen_switch(FALSE);
+		event_switch();
+		keyboard_switch();
+
+		switch (major_mode) {
+		case EXEC:
+			emu_init();
+			submenu_controll(CTRL_MODE_EXEC);
+			break;
+
+		case MENU:
+			menu_init();
+			if (quasi88_is_pause()) {
+				submenu_controll(CTRL_MODE_MENU_PAUSE);
+			} else if (quasi88_is_askreset()) {
+				submenu_controll(CTRL_MODE_MENU_ASKRESET);
+			} else if (quasi88_is_askspeedup()) {
+				submenu_controll(CTRL_MODE_MENU_ASKSPEEDUP);
+			} else if (quasi88_is_askdiskchange()) {
+				submenu_controll(CTRL_MODE_MENU_ASKDISKCHANGE);
+			} else if (quasi88_is_askquit()) {
+				submenu_controll(CTRL_MODE_MENU_ASKQUIT);
+			} else {
+				submenu_controll(CTRL_MODE_MENU_FULLMENU);
+			}
+			break;
+
+#ifdef USE_MONITOR
+		case MONITOR:
+			monitor_init();
+			submenu_controll(CTRL_MODE_MONITOR);
+			break;
+#endif
+		}
+
+		wait_vsync_switch();
+
+		/* イニシャル処理完了 */
+		init_done = TRUE;
 	}
 
-	/* モード変更が発生していたら、(WAIT後に) INIT へ遷移する */
-	/* そうでなければ、            (WAIT後に) MAIN へ遷移する */
-	if (quasi88_event_flags & EVENT_MODE_CHANGED) {
-	    step_after_wait = INIT;
-	} else {
-	    step_after_wait = MAIN;
+
+	/* メイン処理 ================================================= */
+
+	/* イベント処理 */
+	event_update();
+
+	/* アラーム処理 */
+	alarm_update();
+
+	/* Q8TK 1フレーム分処理 */
+	q8tk_one_frame();
+
+	bridge_accept_client();
+	{
+		char cmd_buf[1024];
+		bridge_response_t resp;
+		int len = bridge_receive_command(cmd_buf, sizeof(cmd_buf));
+		if (len > 0) {
+			bridge_process_command(cmd_buf, &resp);
+			bridge_send_response(&resp);
+		}
 	}
 
-	/* 描画タイミングならばここで描画。その後 WAIT へ  */
-	/* そうでなければ、                WAIT せずに遷移 */
-	if (quasi88_event_flags & EVENT_FRAME_UPDATE) {
-	    quasi88_event_flags &= ~EVENT_FRAME_UPDATE;
-	    screen_update();
-	    step = WAIT;
-	} else {
-	    step = step_after_wait;
-	}
-
-	/* モニター遷移時や終了時は、 WAIT せずに即ちに INIT へ */
-	if (quasi88_event_flags & (EVENT_DEBUG | EVENT_QUIT)) {
-	    step = INIT;
-	}
-
-	/* 遷移するため、一旦関数を抜ける (WAIT時はFALLTHROUGHでもいいけど) */
-	return QUASI88_LOOP_BUSY;
-
-
-    /* ======================== ウェイト処理 ======================== */
-    case WAIT:
-	stat = WAIT_JUST;
-
-	switch (mode) {
+	switch (major_mode) {
 	case EXEC:
-	    profiler_lapse( PROF_LAPSE_IDLE );
-	    if (! no_wait) { stat = wait_vsync_update(); }
-	    break;
-
+		profiler_lapse(PROF_LAPSE_RESET);
+		emu_main();
+		break;
+#ifdef  USE_MONITOR
+	case MONITOR:
+		if (!bridge_is_bridge_only_mode() && !bridge_has_client()) {
+			monitor_main();
+		}
+		break;
+#endif
 	case MENU:
-	case PAUSE:
-	    /* Esound の場合、 MENU/PAUSE でも stream を流しておかないと
-	       複数起動時に、 MENU/PAUSE してないほうが音がでなくなる。
-	       が、このままだと、現在の音が流れっぱなしになるので、
-	       無音を流すようにしないと。 */
-	    xmame_sound_update();		/* サウンド出力 */
-	    xmame_update_video_and_audio();	/* サウンド出力 その2 */
-	    stat = wait_vsync_update();
-	    break;
+		menu_main();
+		break;
 	}
 
-	if (stat == WAIT_YET) { return QUASI88_LOOP_BUSY; }
+	{
+		profiler_lapse(PROF_LAPSE_SND);
 
+		/* サウンド出力 */
+		xmame_sound_update();
 
-	/* ウェイト時間を元に、フレームスキップの有無を決定 */
-	if (mode == EXEC) {
-	    frameskip_check((stat == WAIT_JUST) ? TRUE : FALSE);
+		profiler_lapse(PROF_LAPSE_AUDIO);
+
+		/* サウンド出力 その2 */
+		xmame_update_video_and_audio();
 	}
 
-	/* ウェイト処理が完了したら、次 (INIT か MAIN) に遷移 */
-	step = step_after_wait;
+	/* モード変更が発生していたら、再度イニシャル必要 */
+	if (quasi88_event_flags & EVENT_MODE_CHANGED) {
+		init_done = FALSE;
+	}
+
+	/* 描画タイミングならばここで描画。その後ウェイトへ */
+	if (quasi88_event_flags & EVENT_FRAME_UPDATE) {
+		quasi88_event_flags &= ~EVENT_FRAME_UPDATE;
+		statusbar_update();
+		screen_update();
+		do_wait = TRUE;
+	} else {
+		do_wait = FALSE;
+	}
+
+	/* ただし、モニター遷移時や終了時は、ウェイトしない */
+	if (quasi88_event_flags & (EVENT_DEBUG | EVENT_QUIT)) {
+		do_wait = FALSE;
+		init_done = FALSE;
+	}
+
+
+	/* ウェイト処理 ================================================= */
+	if (do_wait) {
+		int stat = WAIT_JUST;
+
+		profiler_lapse(PROF_LAPSE_IDLE);
+		if ((major_mode == EXEC) && (no_wait)) {
+			/* ウェイトなし */
+			/* EMPTY */;
+		} else {
+			stat = wait_vsync_update();
+		}
+
+
+		/* WAIT_YET はありえないが、念のためガード */
+		if (stat == WAIT_YET) {
+			return QUASI88_LOOP_BUSY;
+		}
+
+
+		/* ウェイト時間を元に、フレームスキップの有無を決定 */
+		if (major_mode == EXEC) {
+			frameskip_check((stat == WAIT_JUST) ? TRUE : FALSE);
+		}
+	}
+
+
 	return QUASI88_LOOP_ONE;
-    }
-
-    /* ここには来ない ! */
-    return QUASI88_LOOP_EXIT;
 }
 
 
 
 /*======================================================================
  * QUASI88 のモード制御
- *	モードとは QUASI88 の状態のことで、 EXEC (実行)、PAUSE (一時停止)、
- *	MENU (メニュー画面)、 MONITOR (対話型デバッガ)、 QUIT(終了) がある。
  *======================================================================*/
 /* QUASI88のモードを設定する */
-static	void	set_mode(int newmode)
+static void set_mode(int newmode)
 {
-    if (mode != newmode) {
+	if (mode != newmode) {
 
-	if (mode == MENU) {		/* メニューから他モードの切替は */
-	    q8tk_event_quit();		/* Q8TK の終了が必須            */
+		/* メニューから他モードの切替はQ8TK の終了が必須 */
+		if ((mode & MAJOR_MODE) == MENU) {
+			q8tk_event_quit();
+		}
+
+		next_mode = newmode;
+		quasi88_event_flags |= EVENT_MODE_CHANGED;
+		CPU_BREAKOFF();
 	}
-
-	next_mode = newmode;
-	quasi88_event_flags |= EVENT_MODE_CHANGED;
-	CPU_BREAKOFF();
-    }
 }
 
 /* QUASI88のモードを切り替える */
-void	quasi88_exec(void)
+void quasi88_exec(void)
 {
-    set_mode(EXEC);
-    set_emu_exec_mode(GO);
+	set_mode(EXEC);
+	set_emu_exec_mode(GO);
 }
 
-void	quasi88_exec_step(void)
+void quasi88_exec_step(void)
 {
-    set_mode(EXEC);
-    set_emu_exec_mode(STEP);
+	set_mode(EXEC);
+	set_emu_exec_mode(STEP);
 }
 
-void	quasi88_exec_trace(void)
+void quasi88_exec_trace(void)
 {
-    set_mode(EXEC);
-    set_emu_exec_mode(TRACE);
+	set_mode(EXEC);
+	set_emu_exec_mode(TRACE);
 }
 
-void	quasi88_exec_trace_change(void)
+void quasi88_exec_trace_change(void)
 {
-    set_mode(EXEC);
-    set_emu_exec_mode(TRACE_CHANGE);
+	set_mode(EXEC);
+	set_emu_exec_mode(TRACE_CHANGE);
 }
 
-void	quasi88_menu(void)
+void quasi88_menu(void)
 {
-    /* Clear exec state when entering MENU to prevent stale state */
-    clear_exec_state();
-    set_mode(MENU);
+	clear_exec_state();
+	set_mode(MENU | MENU_MODE_FULLMENU);
 }
 
-void	quasi88_pause(void)
+void quasi88_pause(void)
 {
-    /* Clear exec state when entering PAUSE to prevent stale state */
-    clear_exec_state();
-    set_mode(PAUSE);
+	clear_exec_state();
+	set_mode(MENU | MENU_MODE_PAUSE);
 }
 
-void	quasi88_monitor(void)
+void quasi88_askreset(void)
 {
-#ifdef	USE_MONITOR
-    /* Clear exec state when entering MONITOR to prevent stale state */
-    clear_exec_state();
-    set_mode(MONITOR);
+	set_mode(MENU | MENU_MODE_ASKRESET);
+}
+
+void quasi88_askspeedup(void)
+{
+	set_mode(MENU | MENU_MODE_ASKSPEEDUP);
+}
+
+void quasi88_askdiskchange(void)
+{
+	set_mode(MENU | MENU_MODE_ASKDISKCHANGE);
+}
+
+void quasi88_askquit(void)
+{
+	set_mode(MENU | MENU_MODE_ASKQUIT);
+}
+
+void quasi88_monitor(void)
+{
+#ifdef  USE_MONITOR
+	clear_exec_state();
+	set_mode(MONITOR);
 #else
-    set_mode(PAUSE);
+	clear_exec_state();
+	set_mode(MENU | MENU_MODE_PAUSE);
 #endif
 }
 
-void	quasi88_debug(void)
+void quasi88_debug(void)
 {
-#ifdef	USE_MONITOR
-    set_mode(MONITOR);
-    quasi88_event_flags |= EVENT_DEBUG;
+#ifdef  USE_MONITOR
+	clear_exec_state();
+	set_mode(MONITOR);
+	quasi88_event_flags |= EVENT_DEBUG;
 #else
-    set_mode(PAUSE);
+	clear_exec_state();
+	set_mode(MENU | MENU_MODE_PAUSE);
 #endif
 }
 
-void	quasi88_quit(void)
+void quasi88_quit(void)
 {
-    /* Clear exec state when entering QUIT to prevent stale state */
-    clear_exec_state();
-    set_mode(QUIT);
-    quasi88_event_flags |= EVENT_QUIT;
+	clear_exec_state();
+	set_mode(QUIT);
+	quasi88_event_flags |= EVENT_QUIT;
 }
 
 /* QUASI88のモードを取得する */
-int	quasi88_is_exec(void)
+int quasi88_is_exec(void)
 {
-  return (mode == EXEC) ? TRUE : FALSE;
+	return ((mode & MAJOR_MODE) == EXEC) ? TRUE : FALSE;
 }
-int	quasi88_is_menu(void)
+int quasi88_is_monitor(void)
 {
-  return (mode == MENU) ? TRUE : FALSE;
+	return ((mode & MAJOR_MODE) == MONITOR) ? TRUE : FALSE;
 }
-int	quasi88_is_pause(void)
+int quasi88_is_menu_mode(void)
 {
-  return (mode == PAUSE) ? TRUE : FALSE;
+	return ((mode & MAJOR_MODE) == MENU) ? TRUE : FALSE;
 }
-int	quasi88_is_monitor(void)
+int quasi88_is_fullmenu(void)
 {
-  return (mode == MONITOR) ? TRUE : FALSE;
+	return (mode == (MENU | MENU_MODE_FULLMENU)) ? TRUE : FALSE;
+}
+int quasi88_is_pause(void)
+{
+	return (mode == (MENU | MENU_MODE_PAUSE)) ? TRUE : FALSE;
+}
+int quasi88_is_askreset(void)
+{
+	return (mode == (MENU | MENU_MODE_ASKRESET)) ? TRUE : FALSE;
+}
+int quasi88_is_askspeedup(void)
+{
+	return (mode == (MENU | MENU_MODE_ASKSPEEDUP)) ? TRUE : FALSE;
+}
+int quasi88_is_askdiskchange(void)
+{
+	return (mode == (MENU | MENU_MODE_ASKDISKCHANGE)) ? TRUE : FALSE;
+}
+int quasi88_is_askquit(void)
+{
+	return (mode == (MENU | MENU_MODE_ASKQUIT)) ? TRUE : FALSE;
+}
+int quasi88_get_menu_mode(void)
+{
+	return (mode & MINOR_MODE);
 }
 
-
-/*
- * quasi88_get_mode - Return current emulator mode value
- * For internal use by keyboard injection legality check
- */
 int quasi88_get_mode(void)
 {
-    return mode;
+	return mode;
 }
+
 
 
 
 
 /***********************************************************************
- *	適切な位置に移動せよ
+ * 適切な位置に移動せよ
  ************************************************************************/
-void	wait_vsync_switch(void)
+void wait_vsync_switch(void)
 {
-    long dt;
+	long dt;
 
-    /* dt < 1000000us (1sec) でないとダメ */
-    if (quasi88_is_exec()) {
-	dt = (long)((1000000.0 / (CONST_VSYNC_FREQ * wait_rate/100)));
-	wait_vsync_setup(dt, wait_by_sleep);
-    } else {
-	dt = (long)(1000000.0 / CONST_VSYNC_FREQ);
-	wait_vsync_setup(dt, TRUE);
-    }
+	/* dt < 1000000us (1sec) でないとダメ */
+	if (quasi88_is_exec()) {
+		dt = (long)((1000000.0 / (CONST_VSYNC_FREQ * wait_rate / 100)));
+		wait_vsync_setup(dt, wait_by_sleep);
+	} else {
+		dt = (long)(1000000.0 / CONST_VSYNC_FREQ);
+		wait_vsync_setup(dt, TRUE);
+	}
 }
 
 
-static	void	status_override(void)
+static int stateload_or_skip_at_startup(void)
 {
-    static int first_fime = TRUE;
-
-    if (first_fime) {
-
-	/* EMUモードで起動した場合のみ、ステータスの表示を変える */
-	if (mode == EXEC) {
-
-	    status_message(0, STATUS_INFO_TIME, Q_TITLE " " Q_VERSION);
-
-	    if (resume_flag == 0) {
-		if (status_imagename == FALSE) {
-		    status_message_default(1, "<F12> key to MENU");
+	if (resume_flag) {
+		if (stateload() == FALSE) {
+			fprintf(stderr, "stateload: Failed ! (filename = %s)\n",
+					filename_get_state());
+			return FALSE;
 		}
-	    } else {
-		status_message(1, STATUS_INFO_TIME, "State-Load Successful");
-	    }
+		VERBOSE_PROC_PRINTF("Stateload...OK\n");
 	}
-	first_fime = FALSE;
-    }
-}
-
-
-
-/***********************************************************************
- *	デバッグ用
- ************************************************************************/
-#include "debug.c"
-
-
-
-/***********************************************************************
- *	雑多な関数
- ************************************************************************/
-#include "utility.c"
-
-
-
-/***********************************************************************
- *			ファイル名制御／管理
- ************************************************************************/
-#include "fname.c"
-
-
-
-
-/***********************************************************************
- * 各種動作パラメータの変更
- *	これらの関数は、ショートカットキー処理や、機種依存部のイベント
- *	処理などから呼び出されることを *一応* 想定している。
- *
- *	メニュー画面の表示中に呼び出すと、メニュー表示と食い違いが生じる
- *	ので、メニュー中は呼び出さないように。エミュ実行中に呼び出すのが
- *	一番安全。うーん、いまいち。
- *
- *	if( mode == EXEC ){
- *	    quasi88_disk_insert_and_reset( file, FALSE );
- *	}
- *
- ************************************************************************/
-
-/***********************************************************************
- * QUASI88 起動中のリセット処理関数
- ************************************************************************/
-void	quasi88_get_reset_cfg(T_RESET_CFG *cfg)
-{
-    cfg->boot_basic	= boot_basic;
-    cfg->boot_dipsw	= boot_dipsw;
-    cfg->boot_from_rom	= boot_from_rom;
-    cfg->boot_clock_4mhz= boot_clock_4mhz;
-    cfg->set_version	= set_version;
-    cfg->baudrate_sw	= baudrate_sw;
-    cfg->use_extram	= use_extram;
-    cfg->use_jisho_rom	= use_jisho_rom;
-    cfg->sound_board	= sound_board;
-}
-
-void	quasi88_reset(const T_RESET_CFG *cfg)
-{
-    int sb_changed = FALSE;
-    int empty[2];
-
-    if (verbose_proc) printf("Reset QUASI88...start\n");
-
-    pc88main_term();
-    pc88sub_term();
-
-    if (cfg) {
-	if (sound_board	!= cfg->sound_board) {
-	    sb_changed = TRUE;
-	}
-
-	boot_basic	= cfg->boot_basic;
-	boot_dipsw	= cfg->boot_dipsw;
-	boot_from_rom	= cfg->boot_from_rom;
-	boot_clock_4mhz	= cfg->boot_clock_4mhz;
-	set_version	= cfg->set_version;
-	baudrate_sw	= cfg->baudrate_sw;
-	use_extram	= cfg->use_extram;
-	use_jisho_rom	= cfg->use_jisho_rom;
-	sound_board	= cfg->sound_board;
-    }
-
-    /* メモリの再確保が必要なら、処理する */
-    if (memory_allocate_additional() == FALSE) {
-	quasi88_exit(-1);	/* 失敗！ */
-    }
-
-    /* サウンド出力のリセット */
-    if (sb_changed == FALSE) {
-	xmame_sound_reset();
-    } else {
-	menu_sound_restart(FALSE);	/* サウンドドライバの再初期化 */
-    }
-
-    /* ワークの初期化 */
-    pc88main_init(INIT_RESET);
-    pc88sub_init(INIT_RESET);
-
-    /* FDCの初期化 */
-    empty[0] = drive_check_empty(0);
-    empty[1] = drive_check_empty(1);
-    drive_reset();
-    if (empty[0]) drive_set_empty(0);
-    if (empty[1]) drive_set_empty(1);
-
-    /*if (xmame_has_sound()) xmame_sound_reset();*/
-
-    emu_reset();
-
-    if (verbose_proc) printf("Reset QUASI88...done\n");
-}
-
-
-
-/***********************************************************************
- * QUASI88 起動中のステートロード処理関数
- *	TODO 引数で、ファイル名指定？
- ************************************************************************/
-int	quasi88_stateload(int serial)
-{
-    int now_board, success;
-
-    if (serial >= 0) {			/* 連番指定あり (>=0) なら */
-	filename_set_state_serial(serial);	/* 連番を設定する */
-    }
-
-    if (verbose_proc) printf("Stateload...start (%s)\n",filename_get_state());
-
-    if (stateload_check_file_exist() == FALSE) {	/* ファイルなし */
-	if (quasi88_is_exec()) {
-	    status_message(1, STATUS_INFO_TIME, "State-Load file not found !");
-	} /* メニューではダイアログ表示するので、ステータス表示は無しにする */
-
-	if (verbose_proc) printf("State-file not found\n");
-	return FALSE;
-    }
-
-
-    pc88main_term();			/* 念のため、ワークを終了状態に */
-    pc88sub_term();
-    imagefile_all_close();		/* イメージファイルを全て閉じる */
-
-    /*xmame_sound_reset();*/		/* 念のため、サウンドリセット */
-    /*quasi88_reset();*/		/* 念のため、全ワークリセット */
-
-
-    now_board = sound_board;
-
-    success = stateload();		/* ステートロード実行 */
-
-    if (now_board != sound_board) { 	/* サウンドボードが変わったら */
-	menu_sound_restart(FALSE);	/* サウンドドライバの再初期化 */
-    }
-
-    if (verbose_proc) {
-	if (success) printf("Stateload...done\n");
-	else         printf("Stateload...Failed, Reset start\n");
-    }
-
-
-    if (success) {			/* ステートロード成功したら・・・ */
-
-	imagefile_all_open(TRUE);		/* イメージファイルを全て開く*/
-
-	pc88main_init(INIT_STATELOAD);
-	pc88sub_init(INIT_STATELOAD);
-
-    } else {				/* ステートロード失敗したら・・・ */
-
-	quasi88_reset(NULL);			/* とりあえずリセット */
-    }
-
-
-    if (quasi88_is_exec()) {
-	if (success) {
-	    status_message(1, STATUS_INFO_TIME, "State-Load Successful");
-	} else {
-	    status_message(1, STATUS_INFO_TIME, "State-Load Failed !  Reset done ...");
-	}
-
-	/* quasi88_loop の内部状態を INIT にするため、モード変更扱いとする */
-	quasi88_event_flags |= EVENT_MODE_CHANGED;
-    }
-    /* メニューではダイアログ表示するので、ステータス表示は無しにする */
-
-    return success;
-}
-
-
-
-/***********************************************************************
- * QUASI88 起動中のステートセーブ処理関数
- *	TODO 引数で、ファイル名指定？
- ************************************************************************/
-int	quasi88_statesave(int serial)
-{
-    int success;
-
-    if (serial >= 0) {			/* 連番指定あり (>=0) なら */
-	filename_set_state_serial(serial);	/* 連番を設定する */
-    }
-
-    if (verbose_proc) printf("Statesave...start (%s)\n",filename_get_state());
-
-    success = statesave();		/* ステートセーブ実行 */
-
-    if (verbose_proc) {
-	if (success) printf("Statesave...done\n");
-	else         printf("Statesave...Failed, Reset done\n");
-    }
-
-
-    if (quasi88_is_exec()) {
-	if (success) {
-	    status_message(1, STATUS_INFO_TIME, "State-Save Successful");
-	} else {
-	    status_message(1, STATUS_INFO_TIME, "State-Save Failed !");
-	}
-    }	/* メニューではダイアログ表示するので、ステータス表示は無しにする */
-
-    return success;
-}
-
-
-
-/***********************************************************************
- * 画面スナップショット保存
- *	TODO 引数で、ファイル名指定？
- ************************************************************************/
-int	quasi88_screen_snapshot(void)
-{
-    int success;
-
-    success = screen_snapshot_save();
-
-
-    if (success) {
-	status_message(1, STATUS_INFO_TIME, "Screen Capture Saved");
-    } else {
-	status_message(1, STATUS_INFO_TIME, "Screen Capture Failed !");
-    }
-
-    return success;
-}
-
-
-
-/***********************************************************************
- * サウンドデータのファイル出力
- *	TODO 引数で、ファイル名指定？
- ************************************************************************/
-int	quasi88_waveout(int start)
-{
-    int success;
-
-    if (start) {
-	success = waveout_save_start();
-
-	if (success) {
-	    status_message(1, STATUS_INFO_TIME, "Sound Record Start ...");
-	} else {
-	    status_message(1, STATUS_INFO_TIME, "Sound Record Failed !");
-	}
-
-    } else {
-
-	success = TRUE;
-
-	waveout_save_stop();
-	status_message(1, STATUS_INFO_TIME, "Sound Record Stopped");
-    }
-
-    return success;
-}
-
-
-
-/***********************************************************************
- * ドラッグアンドドロップ
- *	TODO 戻り値をもう一工夫
- ************************************************************************/
-int	quasi88_drag_and_drop(const char *filename)
-{
-    if (quasi88_is_exec() ||
-	quasi88_is_pause()) {
-
-	if (quasi88_disk_insert_all(filename, FALSE)) {
-
-	    status_message(1, STATUS_INFO_TIME, "Disk Image Set and Reset");
-	    quasi88_reset(NULL);
-
-	    if (quasi88_is_pause()) {
-		quasi88_exec();
-	    }
-
-	} else {
-
-	    status_message(1, STATUS_WARN_TIME, "D&D Failed !  Disk Unloaded ...");
-	}
-
 	return TRUE;
-    }
-
-    return FALSE;
 }
 
 
-
-/***********************************************************************
- * ウェイトの比率設定
- * ウェイトの有無設定
- ************************************************************************/
-int	quasi88_cfg_now_wait_rate(void)
+void quasi88_set_status(void)
 {
-    return wait_rate;
-}
-void	quasi88_cfg_set_wait_rate(int rate)
-{
-    int time = STATUS_INFO_TIME;
-    char str[32];
-    long dt;
-
-    if (rate < 5)    rate = 5;
-    if (rate > 5000) rate = 5000;
-
-    if (wait_rate != rate) {
-	wait_rate = rate;
-
-	if (quasi88_is_exec()) {
-
-	    sprintf(str, "WAIT  %4d[%%]", wait_rate);
-
-	    status_message(1, time, str);
-	    /* ↑ ウェイト変更したので、表示時間はウェイト倍になる */
-
-	    dt = (long)((1000000.0 / (CONST_VSYNC_FREQ * wait_rate / 100)));
-	    wait_vsync_setup(dt, wait_by_sleep);
+	if (quasi88_is_menu_mode()) {
+		menu_status();
+	} else {
+		emu_status();
 	}
-    }
 }
-int	quasi88_cfg_now_no_wait(void)
+
+
+static void status_message_at_startup(void)
 {
-    return no_wait;
-}
-void	quasi88_cfg_set_no_wait(int enable)
-{
-    int time = STATUS_INFO_TIME;
-    char str[32];
-    long dt;
-
-    if (no_wait != enable) {
-	no_wait = enable;
-
-	if (quasi88_is_exec()) {
-
-	    if (no_wait) { sprintf(str, "WAIT  OFF");    time *= 10; }
-	    else           sprintf(str, "WAIT  ON");
-
-	    status_message(1, time, str);
-	    /* ↑ ウェイトなしなので、表示時間は実際のところ不定 */
-
-	    dt = (long)((1000000.0 / (CONST_VSYNC_FREQ * wait_rate / 100)));
-	    wait_vsync_setup(dt, wait_by_sleep);
+	if (resume_flag == 0) {
+		emu_status_message_set(STATUS_INFO, "<F12> key to MENU", 0);
+	} else {
+		emu_status_message_set(STATUS_INFO,
+							   "State-Load Successful",
+							   "ステートロードしました");
 	}
-    }
-}
-
-
-
-/***********************************************************************
- * ディスクイメージファイル設定
- *	・両ドライブに挿入
- *	・指定ドライブに挿入
- *	・反対ドライブのイメージファイルを、挿入
- *	・両ドライブ取り出し
- *	・指定ドライブ取り出し
- ************************************************************************/
-int	quasi88_disk_insert_all(const char *filename, int ro)
-{
-    int success;
-
-    quasi88_disk_eject_all();
-
-    success = quasi88_disk_insert(DRIVE_1, filename, 0, ro);
-
-    if (success) {
-
-	if (disk_image_num(DRIVE_1) > 1) {
-	    quasi88_disk_insert_A_to_B(DRIVE_1, DRIVE_2, 1);
-	}
-    }
-
-    if (quasi88_is_exec()) {
-	status_message_default(1, NULL);
-    }
-    return success;
-}
-int	quasi88_disk_insert(int drv, const char *filename, int image, int ro)
-{
-    int success = FALSE;
-
-    quasi88_disk_eject(drv);
-
-    if (strlen(filename) < QUASI88_MAX_FILENAME) {
-
-	if (disk_insert(drv, filename, image, ro) == 0) success = TRUE;
-	else                                            success = FALSE;
-
-	if (success) {
-
-	    if (drv == DRIVE_1) boot_from_rom = FALSE;
-
-	    strcpy(file_disk[ drv ], filename);
-	    readonly_disk[ drv ] = ro;
-
-	    if (filename_synchronize) {
-		filename_init_state(TRUE);
-		filename_init_snap(TRUE);
-		filename_init_wav(TRUE);
-	    }
-	}
-    }
-
-    if (quasi88_is_exec()) {
-	status_message_default(1, NULL);
-    }
-    return success;
-}
-int	quasi88_disk_insert_A_to_B(int src, int dst, int img)
-{
-    int success;
-
-    quasi88_disk_eject(dst);
-
-    if (disk_insert_A_to_B(src, dst, img) == 0) success = TRUE;
-    else                                        success = FALSE;
-
-    if (success) {
-	strcpy(file_disk[ dst ], file_disk[ src ]);
-	readonly_disk[ dst ] = readonly_disk[ src ];
-
-	if (filename_synchronize) {
-	    filename_init_state(TRUE);
-	    filename_init_snap(TRUE);
-	    filename_init_wav(TRUE);
-	}
-    }
-
-    if (quasi88_is_exec()) {
-	status_message_default(1, NULL);
-    }
-    return success;
-}
-void	quasi88_disk_eject_all(void)
-{
-    int drv;
-
-    for (drv = 0; drv<2; drv++) {
-	quasi88_disk_eject(drv);
-    }
-
-    boot_from_rom = TRUE;
-
-    if (quasi88_is_exec()) {
-	status_message_default(1, NULL);
-    }
-}
-void	quasi88_disk_eject(int drv)
-{
-    if (disk_image_exist(drv)) {
-	disk_eject(drv);
-	memset(file_disk[ drv ], 0, QUASI88_MAX_FILENAME);
-
-	if (filename_synchronize) {
-	    filename_init_state(TRUE);
-	    filename_init_snap(TRUE);
-	    filename_init_wav(TRUE);
-	}
-    }
-
-    if (quasi88_is_exec()) {
-	status_message_default(1, NULL);
-    }
-}
-
-/***********************************************************************
- * ディスクイメージファイル設定
- *	・ドライブを一時的に空の状態にする
- *	・ドライブのイメージを変更する
- *	・ドライブのイメージを前のイメージに変更する
- *	・ドライブのイメージを次のイメージに変更する
- ************************************************************************/
-enum { TYPE_SELECT, TYPE_EMPTY, TYPE_NEXT, TYPE_PREV };
-
-static void disk_image_sub(int drv, int type, int img)
-{
-    int d;
-    char str[48];
-
-    if (disk_image_exist(drv)) {
-	switch (type) {
-
-	case TYPE_EMPTY:
-	    drive_set_empty(drv);
-	    sprintf(str, "DRIVE %d:  <<<< Eject >>>>         ", drv + 1);
-	    break;
-
-	case TYPE_NEXT:
-	case TYPE_PREV:
-	    if (type == TYPE_NEXT) d = +1;
-	    else                   d = -1;
-
-	    img = disk_image_selected(drv) + d;
-	    /* FALLTHROUGH */
-
-	default:
-	    if (img < 0) img = disk_image_num(drv)-1;
-	    if (img >= disk_image_num(drv)) img = 0;
-
-	    drive_unset_empty(drv);
-	    disk_change_image(drv, img);
-
-	    sprintf(str, "DRIVE %d:  %-16s   %s  ",
-		    drv + 1,
-		    drive[drv].image[ disk_image_selected(drv) ].name,
-		    (drive[drv].image[ disk_image_selected(drv) ].protect)
-							? "(p)" : "   ");
-	    break;
-	}
-    } else {
-	sprintf(str, "DRIVE %d:   --  No Disk  --        ", drv + 1);
-    }
-
-    if (quasi88_is_exec()) {
-	status_message_default(1, NULL);
-    }
-    status_message(1, STATUS_INFO_TIME, str);
-}
-void	quasi88_disk_image_select(int drv, int img)
-{
-    disk_image_sub(drv, TYPE_SELECT, img);
-}
-void	quasi88_disk_image_empty(int drv)
-{
-    disk_image_sub(drv, TYPE_EMPTY, 0);
-}
-void	quasi88_disk_image_next(int drv)
-{
-    disk_image_sub(drv, TYPE_NEXT, 0);
-}
-void	quasi88_disk_image_prev(int drv)
-{
-    disk_image_sub(drv, TYPE_PREV, 0);
-}
-
-
-
-
-
-
-/*======================================================================
- * テープイメージファイル設定
- *		・ロード用テープイメージファイルセット
- *		・ロード用テープイメージファイル巻き戻し
- *		・ロード用テープイメージファイル取り外し
- *		・セーブ用テープイメージファイルセット
- *		・セーブ用テープイメージファイル取り外し
- *======================================================================*/
-int	quasi88_load_tape_insert(const char *filename)
-{
-    quasi88_load_tape_eject();
-
-    if (strlen(filename) < QUASI88_MAX_FILENAME &&
-	sio_open_tapeload(filename)) {
-
-	strcpy(file_tape[ CLOAD ], filename);
-	return TRUE;
-
-    }
-    return FALSE;
-}
-int	quasi88_load_tape_rewind(void)
-{
-    if (sio_tape_rewind()) {
-
-	return TRUE;
-
-    }
-    quasi88_load_tape_eject();
-    return FALSE;
-}
-void	quasi88_load_tape_eject(void)
-{
-    sio_close_tapeload();
-    memset(file_tape[ CLOAD ], 0, QUASI88_MAX_FILENAME);
-}
-
-int	quasi88_save_tape_insert(const char *filename)
-{
-    quasi88_save_tape_eject();
-
-    if (strlen(filename) < QUASI88_MAX_FILENAME &&
-	sio_open_tapesave(filename)) {
-
-	strcpy(file_tape[ CSAVE ], filename);
-	return TRUE;
-
-    }
-    return FALSE;
-}
-void	quasi88_save_tape_eject(void)
-{
-    sio_close_tapesave();
-    memset(file_tape[ CSAVE ], 0, QUASI88_MAX_FILENAME);
-}
-
-/*======================================================================
- * シリアル・パラレルイメージファイル設定
- *		・シリアル入力用ファイルセット
- *		・シリアル入力用ファイル取り外し
- *		・シリアル出力用ファイルセット
- *		・シリアル出力用ファイル取り外し
- *		・プリンタ出力用ファイルセット
- *		・プリンタ入力用ファイルセット
- *======================================================================*/
-int	quasi88_serial_in_connect( const char *filename )
-{
-  quasi88_serial_in_remove();
-
-  if( strlen( filename ) < QUASI88_MAX_FILENAME &&
-      sio_open_serialin( filename ) ){
-
-    strcpy( file_sin, filename );
-    return TRUE;
-
-  }
-  return FALSE;
-}
-void	quasi88_serial_in_remove( void )
-{
-  sio_close_serialin();
-  memset( file_sin, 0, QUASI88_MAX_FILENAME );
-}
-int	quasi88_serial_out_connect( const char *filename )
-{
-  quasi88_serial_out_remove();
-
-  if( strlen( filename ) < QUASI88_MAX_FILENAME &&
-      sio_open_serialout( filename ) ){
-
-    strcpy( file_sout, filename );
-    return TRUE;
-
-  }
-  return FALSE;
-}
-void	quasi88_serial_out_remove( void )
-{
-  sio_close_serialout();
-  memset( file_sout, 0, QUASI88_MAX_FILENAME );
-}
-int	quasi88_printer_connect( const char *filename )
-{
-  quasi88_printer_remove();
-
-  if( strlen( filename ) < QUASI88_MAX_FILENAME &&
-      printer_open( filename ) ){
-
-    strcpy( file_prn, filename );
-    return TRUE;
-
-  }
-  return FALSE;
-}
-void	quasi88_printer_remove( void )
-{
-  printer_close();
-  memset( file_prn, 0, QUASI88_MAX_FILENAME );
 }

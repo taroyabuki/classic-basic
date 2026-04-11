@@ -10,118 +10,62 @@
 #			    記載されているコメントが役立つかもしれません。
 ###############################################################################
 
-# X11版、SDL版のいずれかを設定します
-#	X11版の場合は、 「X11_VERSION」以外の行をコメントアウトしてください。
-#	SDL版の場合は、 「SDL_VERSION」以外の行をコメントアウトしてください。
-#	SDL2版の場合は、「SDL2_VERSION」以外の行をコメントアウトしてください。
-#	GTK版の場合は、 「GTK_VERSION」以外の行をコメントアウトしてください。
-#	( GTK版は実験中です。GTK版でサウンドを鳴らすには、SDL が必要です )
-
-# X11_VERSION	= 1
-# SDL_VERSION	= 1
-SDL2_VERSION	= 1
-# GTK_VERSION	= 1
-
-
 #######################################################################
 # 基本設定
 #######################################################################
 
 
-# ROM用ディレクトリを設定します
-#	BASIC の ROMイメージ を検索するディレクトリです。
-#	オプションでの指定も、環境変数の設定も無い場合に、ここで設定した
-#	ディレクトリが使用されます。
+# QUASI88 で使用する各種ディレクトリを設定します。
+#	いくつかは、環境変数や起動時のオプションで指定することができますが、
+#	それらの指定がない場合の、デフォルトを設定します。
 #	 ~/ は、QUASI88の起動時にホームディレクトリ（$HOME）に展開されます。
+
+# ・ROM用ディレクトリを設定します
+#	BASIC の ROMイメージ を検索するディレクトリです。
 
 ROMDIR	= ~/quasi88/rom/
 
 
-# DISK用ディレクトリを設定します
+# ・DISK用ディレクトリを設定します
 #	起動時に、引数で指定したイメージファイルを開く際に、
 #	そのファイルを検索するディレクトリです。
-#	オプションでの指定も、環境変数の設定も無い場合に、ここで設定した
-#	ディレクトリが使用されます。
-#	 ~/ は、QUASI88の起動時にホームディレクトリ（$HOME）に展開されます。
 
 DISKDIR	= ~/quasi88/disk/
 
 
-# TAPE用ディレクトリを設定します
+# ・TAPE用ディレクトリを設定します
 #	TAPE のイメージを置くディレクトリです。
-#	オプションでの指定も、環境変数の設定も無い場合に、ここで設定した
-#	ディレクトリが使用されます。
-#	 ~/ は、QUASI88の起動時にホームディレクトリ（$HOME）に展開されます。
 
 TAPEDIR	= ~/quasi88/tape/
 
 
-# (X11)
-# リトルエンディアンの場合の指定
-#	ビッグエンディアンマシンの場合は、コメントアウトしましょう。
-#	    例えば、IRIX, AIX、Mac OS X(PowerPC) などは、コメントアウトします。
-#		    Intel 系の CPUを使った OS などは、このままにしておきます。
+# ・スナップショット保存先ディレクトリを設定します
+#	スクリーンスナップショットの画像ファイルが保存されるディレクトリです。
+#	コメントアウトされている場合は、カレントディレクトリになります。
 
-X11_LSB_FIRST	= 1
+# SNAPDIR = ~/
 
 
-# (X11)
-# MIT-SHM を使うかどうかの指定
-#	MIT-SHM をサポートしてない場合は、コメントアウトしましょう。
+# ・ステートファイル保存先ディレクトリを設定します
+#	ステートセーブ時のファイルが保存されるディレクトリです。
+#	コメントアウトされている場合は、 ~/.quasi88/state/ になります。
 
-X11_MITSHM	= 1
-
-
-
-# (X11)
-# long long 型をサポートしていないコンパイラを使う場合、以下をコメントアウト
-# してください。 (大抵のコンパイラはサポートしている・・・ハズ)
-
-X11_HAVE_LONG_LONG = 1
+# STATEDIR = ~/.quasi88/state/
 
 
+# ・個別設定ファイル用ディレクトリを設定します
+#	起動時にディスクイメージファイルとともに読み込まれる、個別設定
+#	ファイルを置くディレクトリです。
+#	コメントアウトされている場合は、 ~/.quasi88/rc/ になります。
 
-# (X11)
-# 関数 gettimeofday() を実装していないシステムの場合、以下をコメントアウト
-# してください。 (大抵のシステムは実装している・・・ハズ)
-
-X11_HAVE_GETTIMEOFDAY = 1
-
-
-
-# (X11)
-# ジョイスティック使用の有無
-#	以下のいずれかの一つのみ、コメントを外すことが出来ます。
-#
-#	 「X11_JOYSTICK = joy_nothing」の行のコメントアウトを外すと、
-#	ジョイスティックはサポートされません。
-#
-#	 「X11_JOYSTICK = joy_sdl」の行のコメントアウトを外すと、
-#	SDLライブラリによるジョイスティック機能が組み込まれます。
-#	( Linux と FreeBSDで動作確認済み。実際にジョイスティックが使えるか
-#	  どうかは、SDLライブラリに依存します。)
-#
-#	 「X11_JOYSTICK = joy_linux_usb」の行のコメントアウトを外すと、
-#	Linux にて USB joystick が使用できます。
-#	( 環境によっては、使用できないかもしれません )
-#
-#	 「X11_JOYSTICK = joy_bsd_usb」の行のコメントアウトを外すと、
-#	FreeBSD にて USB joystick が使用できます。
-#	( 環境によっては、コンパイルすらできないかもしれません )
-
-X11_JOYSTICK	= joy_nothing
-# X11_JOYSTICK	= joy_sdl
-# X11_JOYSTICK	= joy_linux_usb
-# X11_JOYSTICK	= joy_bsd_usb
+# LCFGDIR = ~/.quasi88/rc/
 
 
+# ・全体設定ファイル用ディレクトリを設定します
+#	起動時に読み込まれる、環境設定ファイルを置くディレクトリです。
+#	コメントアウトされている場合は、 ~/.quasi88/ になります。
 
-# QUASI88 ではメニューモードにてスクリーンスナップショット (画面キャプチャ)
-# の保存が可能ですが、この時に予め指定した任意のコマンドを実行することが
-# できます。
-# このコマンド実行機能を無効にしたい場合は、以下をコメントアウトして下さい。
-
-USE_SSS_CMD	= 1
+# GCFGDIR = ~/.quasi88/
 
 
 
@@ -155,22 +99,6 @@ USE_MONITOR		= 1
 
 
 
-# (X11)
-# XFree86-DGA の設定です。興味のある方はどうぞ・・・
-#	XFree86-DGAを有効にするには、root権限が必要なので、ご注意下さい。
-
-# X11_DGA		= 1
-
-
-
-# (X11)
-# XVideo の設定です。興味のある方はどうぞ・・・
-#	まだ実験中です！ うまく動かないかもしれません。
-
-# X11_XV		= 1
-
-
-
 #######################################################################
 # サウンド関連の設定
 #######################################################################
@@ -179,57 +107,6 @@ USE_MONITOR		= 1
 # コメントアウトして下さい。
 
 USE_SOUND		= 1
-
-
-
-# (X11)
-# OS の指定
-#	どれか一つを指定してください。
-#	generic を選ぶと、サウンドなしになります。
-#	そ の 他を選ぶと、サウンドありになる場合もあります。
-#	動作確認が取れているのは、FreeBSD と Linux のみです
-
-#---------------------- FreeBSD
-# ARCH = freebsd
-#---------------------- Linux
-# ARCH = linux
-#---------------------- NetBSD
-# ARCH = netbsd
-#---------------------- OpenBSD
-# ARCH = openbsd
-#---------------------- Solaris / SunOS
-# ARCH = solaris
-#---------------------- QNX Neutrino (QNX4/QNX6)
-# ARCH = nto
-#---------------------- OpenStep on NeXT systems
-# ARCH = next
-#---------------------- OpenStep on Apple systems (Cocoa)
-ARCH = macosx
-#---------------------- IRIX ( with sound using the old AL (version 1) package)
-# ARCH = irix
-#---------------------- IRIX ( with sound using the al (IRIX 6.x) package)
-# ARCH = irix_al
-#---------------------- AIX ( with sound, you'll need the UMS and SOM lpp's installed ( under AIX4 ))
-# ARCH = aix
-#---------------------- BeOS on Intel
-# ARCH = beos
-#---------------------- generic UNIX, no sound
-# ARCH = generic
-
-
-
-# (X11)
-# サウンドデバイスの指定 
-#	追加したいデバイスがあれば、コメントアウトを外します。
-#	いずれも動作確認されていません。
-
-# SOUND_ESOUND		= 1
-# SOUND_ALSA		= 1
-# SOUND_ARTS_TEIRA	= 1
-# SOUND_ARTS_SMOTEK	= 1
-# SOUND_SDL			= 1
-SOUND_SDL2		= 1
-# SOUND_WAVEOUT		= 1
 
 
 
@@ -248,7 +125,7 @@ SOUND_SDL2		= 1
 # cisc氏作の、fmgen (FM Sound Generator) を組み込まない場合、以下の行を
 # コメントアウトして下さい。
 
-# USE_FMGEN	= 1
+USE_FMGEN	= 1
 
 
 # 注意！
@@ -261,36 +138,12 @@ SOUND_SDL2		= 1
 
 
 #######################################################################
-# SDLライブラリの設定
+# SDL2ライブラリの設定
 #######################################################################
 
-# (X11/SDL/GTK)
-# 以下の場合、SDLライブラリが使用されます。
-#	・SDL_VERSION を選択した場合
-#	・GTK_VERSION を選択し、「USE_SOUND = 1」を指定した場合
-#	・ジョイスティックの設定で 「X11_JOYSTICK = joy_sdl」を指定した場合
-#	・サウンドの設定で、「SOUND_SDL = 1」を指定した場合
-# ここでは、sdl-config を実行するコマンドを指定してください。
-#	通常のOS の場合、sdl-config   のままで大丈夫なはずです。
-#	FreeBSD  の場合、sdl12-config などにリネームされていることがあります。
-#	macOSXでFrameWorkとしてSDL2を入れた場合用のsdl2-config-macを同梱。
+# sdl2-config を実行するコマンドを指定してください。
 
-SDL_CONFIG	= sdl-config
-
-ifeq ($(ARCH),macosx)
-SDL2_CONFIG	= ./osx/sdl2-config-mac
-else
 SDL2_CONFIG	= ./sdl2-config-linux
-endif
-
-#######################################################################
-# GTKライブラリの設定
-#######################################################################
-
-# (GTK)
-# GTK_VERSION を選択した場合のみ、以下の設定が必要です。
-
-GTK_CONFIG	= gtk-config
 
 
 
@@ -298,10 +151,10 @@ GTK_CONFIG	= gtk-config
 # コンパイル関連の設定
 #######################################################################
 
-# コンパイラの指定
+# C コンパイラの設定
+#	gcc 、 clang などを指定してください。
 
-# CC	= clang
-CC	= gcc
+CC	= cc
 
 
 # 必要に応じて、コンパイルオプション (最適化など) を指定してください
@@ -312,7 +165,7 @@ CC	= gcc
 #	あります。PowerPC 系の gcc などがそうですが、この場合、-fsigned-char 
 #	を指定します。
 
-CFLAGS = -O2 -g
+CFLAGS = -O2
 
 # 例えば gcc & PowerPC の場合、以下のコメントアウトを外します。
 # CFLAGS += -fsigned-char
@@ -324,43 +177,28 @@ CFLAGS = -O2 -g
 
 # コンパイラによっては、インライン関数を使うことが出来ます。
 #	以下から、適切なものを一つだけ指定してください。
-#-------------------------------------------------- どんなコンパイラでもOK
+
+# どんなコンパイラでもOK
 # USEINLINE	= '-DINLINE=static'
-#-------------------------------------------------- GCC の場合
+
+# GCC の場合
 USEINLINE	= '-DINLINE=static __inline__'
-#-------------------------------------------------- Intel C++ コンパイラの場合
+
+# Intel C++ コンパイラの場合 (?)
 # USEINLINE	= '-DINLINE=static inline'
-#--------------------------------------------------
-
-
-# X11 関連のディレクトリとライブラリを指定
-
-# 一部のシステム (?)
-# X11INC  	= -I/usr/include/X11
-# X11LIB  	= -L/usr/lib/X11
-
-# XFree86 の場合 (?)
-# X11INC  	= -I/usr/X11R6/include
-# X11LIB  	= -L/usr/X11R6/lib
-
-# X.Org の場合
-# X11INC  	= -I/usr/local/include
-# X11LIB  	= -L/usr/local/lib
-
-# XQuartz(Mac) の場合
-X11INC  	= -I/opt/X11/include
-X11LIB  	= -L/opt/X11/lib
 
 
 
-# C++ コンパイラの設定
+# C++ コンパイラ関連の設定
+#	fmgen を組み込まない場合、これらの設定は不要です。
 #
-#	この設定が必要なのは、 fmgen を組み込む場合のみです。
-#	gcc はあるのに g++ が無い場合、「CXX = gcc」としてみてください。
+#	g++ 、 clang++ などを指定してください。
+#	環境によっては、$(CC) と同じ （ gcc 、 clang など） にします。
 
-CXX	 = g++
-CXXFLAGS = $(CFLAGS)
+CXX	 = c++
+CXXFLAGS = -O2
 CXXLIBS	 = -lstdc++
+
 
 
 # リンカの設定
@@ -369,6 +207,7 @@ CXXLIBS	 = -lstdc++
 
 LD	= $(CC) -Wl,-s
 # LD	= $(CXX) -Wl,-s
+
 
 
 #######################################################################
@@ -389,179 +228,35 @@ BINDIR = /usr/local/bin
 #
 ###############################################################################
 
+######## 古いコンパイラ(C89とか)では、コメントアウトしないといけないかも・・・
+
+HAVE_INTPTR_T		= 1
+
+
+
+
 ######## 実験あれこれ
-
-# コメントアウトすると、その bpp の X環境において動作不能になる実験
-
-X11_SUPPORT_8BPP	= 1
-X11_SUPPORT_16BPP	= 1
-X11_SUPPORT_32BPP	= 1
 
 # コメントアウトすると、倍サイズでの表示ができなくなる実験
 
 SUPPORT_DOUBLE		= 1
 
-# コメントアウトすると、utf-8 のサポートがなくなる実験
-
-SUPPORT_UTF8		= 1
-
-# ダミーコンパイルの実験
-#	X11_VERSION, SDL_VERSION, GTK_VERSION のいずれも定義しない場合、
-#	src/MINI 以下のソースを使って、ダミーのコンパイルが実行される。
-#	サウンド無しにするか、 'ARCH = generic' を指定しておくこと。
-
 
 
 #######################################################################
 #
 #######################################################################
 
-# インクルードディレクトリ
-
-CFLAGS += -Isrc
-
-
 #
-# バージョン毎の設定
+# SDL2バージョンでの設定
 #
 
-ifdef	X11_VERSION
-
-# X11 バージョンでの設定
-
-CFLAGS += -Isrc/FUNIX -Isrc/X11 $(X11INC) 
-LIBS   += $(X11LIB) -lX11 -lXext
-
-# X11バージョンの表示まわり
-
-ifdef	X11_MITSHM
-CFLAGS += -DMITSHM 
-endif
-
-ifdef	X11_DGA
-CFLAGS += -DUSE_DGA
-LIBS   += -lXxf86dga -lXxf86vm
-endif
-
-ifdef	X11_XV
-CFLAGS += -DUSE_XV
-LIBS   += -lXv
-endif
-
-ifdef	X11_SUPPORT_8BPP
-CFLAGS += -DSUPPORT_8BPP
-endif
-ifdef	X11_SUPPORT_16BPP
-CFLAGS += -DSUPPORT_16BPP
-endif
-ifdef	X11_SUPPORT_32BPP
-CFLAGS += -DSUPPORT_32BPP
-endif
-
-# X11バージョンでのジョイスティック設定
-
-ifeq ($(X11_JOYSTICK),joy_sdl)
-
-CFLAGS += -DJOY_SDL `$(SDL_CONFIG) --cflags`
-LIBS   +=           `$(SDL_CONFIG) --libs`
-
-else
-
-ifeq ($(X11_JOYSTICK),joy_linux_usb)
-CFLAGS += -DJOY_LINUX_USB
-else
-
-ifeq ($(X11_JOYSTICK),joy_bsd_usb)
-
-CFLAGS += -DJOY_BSD_USB
-
-ifeq ($(shell test -f /usr/include/usbhid.h && echo have_usbhid), have_usbhid)
-CFLAGS += -DHAVE_USBHID_H
-LIBS   += -lusbhid
-else
-ifeq ($(shell test -f /usr/include/libusbhid.h && echo have_libusbhid), have_libusbhid)
-CFLAGS += -DHAVE_LIBUSBHID_H
-LIBS   += -lusbhid
-else
-LIBS   += -lusb
-endif
-endif
-
-else
-CFLAGS += -DJOY_NOTHING
-endif
-
-endif
-endif
-
-# X11バージョンでの雑多な設定
-
-ifdef	X11_LSB_FIRST
-CFLAGS += -DLSB_FIRST
-endif
-
-ifdef	X11_HAVE_LONG_LONG
-CFLAGS += -DHAVE_LONG_LONG
-endif
-
-ifdef	X11_HAVE_GETTIMEOFDAY
-CFLAGS += -DHAVE_GETTIMEOFDAY
-endif
-
-ifdef	HAVE_SELECT
-CFLAGS += -DHAVE_SELECT
-endif
-
-
-CFLAGS += -DQUASI88_X11
-
-
-
-else
-ifdef	SDL_VERSION
-
-# SDLバージョンでの設定
-
-CFLAGS += -Isrc/FUNIX -Isrc/SDL `$(SDL_CONFIG) --cflags`
-LIBS   +=                       `$(SDL_CONFIG) --libs`
-
-CFLAGS += -DQUASI88_SDL
-
-
-else
-ifdef	SDL2_VERSION
-
-# 通常ソースからbuildした場合はこっち
-CFLAGS += -Isrc/FUNIX -Isrc/SDL2 `$(SDL2_CONFIG) --cflags`
-LIBS   +=                       `$(SDL2_CONFIG) --libs`
-# MacでdmgをFrameworksにコピーした場合はこっち
-# CFLAGS += -Isrc/FUNIX -Isrc/SDL2 -I/Library/Frameworks/SDL2.framework/Headers
-# LIBS   +=                       -F/Library/Frameworks -framework SDL2
+CFLAGS   += `$(SDL2_CONFIG) --cflags`
+CXXFLAGS += `$(SDL2_CONFIG) --cflags`
+LIBS     += `$(SDL2_CONFIG) --libs`
 
 CFLAGS += -DQUASI88_SDL2
 
-else
-ifdef	GTK_VERSION
-
-# GTKバージョンでの設定
-
-CFLAGS += -Isrc/FUNIX -Isrc/GTK `$(GTK_CONFIG) --cflags`
-LIBS   +=                       `$(GTK_CONFIG) --libs`
-
-CFLAGS += -DQUASI88_GTK
-
-else
-
-# MINIバージョンでの設定
-
-CFLAGS +=  -Isrc/FDUMMY -Isrc/MINI
-
-CFLAGS += -DQUASI88_MINI
-
-endif
-endif
-endif
-endif
 
 
 # モニターモード有効時の設定
@@ -592,16 +287,14 @@ ifdef	SUPPORT_DOUBLE
 CFLAGS += -DSUPPORT_DOUBLE
 endif
 
-ifdef	SUPPORT_UTF8
-CFLAGS += -DSUPPORT_UTF8
-endif
-
-ifdef	USE_SSS_CMD
-CFLAGS += -DUSE_SSS_CMD
-endif
-
 ifdef	USE_KEYBOARD_BUG
 CFLAGS += -DUSE_KEYBOARD_BUG
+endif
+
+
+
+ifdef	HAVE_INTPTR_T
+CFLAGS += -DHAVE_INTPTR_T
 endif
 
 
@@ -625,245 +318,64 @@ ifdef	USE_SOUND
 #### ディレクトリ
 
 ifdef	USE_OLD_MAME_SOUND
-SNDDRV_DIR	= snddrv-old
+XMAME_DIR	= $(SNDDRV_DIR)/xmame-old
 else
-SNDDRV_DIR	= snddrv
+XMAME_DIR	= $(SNDDRV_DIR)/xmame
 endif
 
-SD_Q88_DIR	= $(SNDDRV_DIR)/quasi88
-SD_X11_DIR	= $(SNDDRV_DIR)/quasi88/X11
-SD_SDL_DIR	= $(SNDDRV_DIR)/quasi88/SDL
-SD_SDL2_DIR	= $(SNDDRV_DIR)/quasi88/SDL2
+SD_Q88_DIR	= $(XMAME_DIR)/quasi88
+SD_SDL_DIR	= $(XMAME_DIR)/quasi88/SDL
 
-SRC_DIR		= $(SNDDRV_DIR)/src
-SOUND_DIR	= $(SNDDRV_DIR)/src/sound
-UNIX_DIR	= $(SNDDRV_DIR)/src/unix
-SYSDEP_DIR	= $(SNDDRV_DIR)/src/unix/sysdep
-DSP_DIR		= $(SNDDRV_DIR)/src/unix/sysdep/dsp-drivers
-MIXER_DIR	= $(SNDDRV_DIR)/src/unix/sysdep/mixer-drivers
+XM_SRC_DIR	= $(XMAME_DIR)/src
+XM_SOUND_DIR	= $(XMAME_DIR)/src/sound
 
 
 #### オブジェクト
 
 SOUND_OBJS_BASE	= $(SD_Q88_DIR)/mame-quasi88.o	\
-		  $(SD_Q88_DIR)/beepintf.o	\
 		  $(SD_Q88_DIR)/beep.o		\
-		  $(SRC_DIR)/driver.o		\
-		  $(SRC_DIR)/restrack.o		\
-		  $(SRC_DIR)/sound.o		\
-		  $(SRC_DIR)/sndintrf.o		\
-		  $(SRC_DIR)/streams.o		\
-		  $(SOUND_DIR)/flt_vol.o	\
-		  $(SOUND_DIR)/flt_rc.o		\
-		  $(SOUND_DIR)/wavwrite.o	\
-		  $(SOUND_DIR)/2203intf.o	\
-		  $(SOUND_DIR)/2608intf.o	\
-		  $(SOUND_DIR)/ay8910.o		\
-		  $(SOUND_DIR)/fm.o		\
-		  $(SOUND_DIR)/ymdeltat.o	\
-		  $(SOUND_DIR)/samples.o
-
-SOUND_OBJS_UNIX	= $(UNIX_DIR)/sound.o			\
-		  $(SYSDEP_DIR)/rc.o			\
-		  $(SYSDEP_DIR)/misc.o			\
-		  $(SYSDEP_DIR)/plugin_manager.o	\
-		  $(SYSDEP_DIR)/sysdep_dsp.o		\
-		  $(SYSDEP_DIR)/sysdep_mixer.o		\
-		  $(SYSDEP_DIR)/sysdep_sound_stream.o
-
-SOUND_OBJS.linux   = $(DSP_DIR)/oss.o $(MIXER_DIR)/oss.o
-SOUND_OBJS.freebsd = $(DSP_DIR)/oss.o $(MIXER_DIR)/oss.o
-SOUND_OBJS.netbsd  = $(DSP_DIR)/netbsd.o
-#SOUND_OBJS.openbsd = $(DSP_DIR)/oss.o $(MIXER_DIR)/oss.o
-SOUND_OBJS.openbsd = $(DSP_DIR)/netbsd.o 
-SOUND_OBJS.solaris = $(DSP_DIR)/solaris.o $(MIXER_DIR)/solaris.o
-SOUND_OBJS.next    = $(DSP_DIR)/soundkit.o
-SOUND_OBJS.macosx  = $(DSP_DIR)/coreaudio.o
-SOUND_OBJS.nto     = $(DSP_DIR)/io-audio.o
-SOUND_OBJS.irix    = $(DSP_DIR)/irix.o
-SOUND_OBJS.irix_al = $(DSP_DIR)/irix_al.o
-SOUND_OBJS.beos    =
-SOUND_OBJS.generic =
-#these need to be converted to plugins first
-#SOUND_OBJS.aix     = $(DSP_DIR)/aix.o
+		  $(SD_Q88_DIR)/beepintf.o	\
+		  $(SD_Q88_DIR)/pcg.o		\
+		  $(SD_Q88_DIR)/pcgintf.o	\
+		  $(XM_SRC_DIR)/driver.o	\
+		  $(XM_SRC_DIR)/restrack.o	\
+		  $(XM_SRC_DIR)/sound.o		\
+		  $(XM_SRC_DIR)/sndintrf.o	\
+		  $(XM_SRC_DIR)/streams.o	\
+		  $(XM_SOUND_DIR)/flt_vol.o	\
+		  $(XM_SOUND_DIR)/flt_rc.o	\
+		  $(XM_SOUND_DIR)/wavwrite.o	\
+		  $(XM_SOUND_DIR)/2203intf.o	\
+		  $(XM_SOUND_DIR)/2608intf.o	\
+		  $(XM_SOUND_DIR)/ay8910.o	\
+		  $(XM_SOUND_DIR)/fm.o		\
+		  $(XM_SOUND_DIR)/ymdeltat.o	\
+		  $(XM_SOUND_DIR)/samples.o
 
 
 #### Cフラグ
 
-CFLAGS           += -DUSE_SOUND
+CFLAGS   += -DUSE_SOUND
+CXXFLAGS += -DUSE_SOUND
 
-SOUND_CFLAGS      = -DPI=M_PI -I$(SRCDIR)/$(SNDDRV_DIR) -I$(SRCDIR)/$(SD_Q88_DIR) -I$(SRCDIR)/$(SRC_DIR) -I$(SRCDIR)/$(SOUND_DIR) -Wno-missing-declarations -Wno-unused
+SOUND_INCDIR      = $(XMAME_DIR) $(SD_Q88_DIR) $(XM_SRC_DIR) $(XM_SOUND_DIR)
+SOUND_CFLAGS      = -DPI=M_PI
+#SOUND_CXXFLAGS    =
 
-SOUND_CFLAGS_UNIX = -I$(SRCDIR)/$(SD_X11_DIR) -I$(SRCDIR)/$(UNIX_DIR) -I$(SRCDIR)/$(SYSDEP_DIR) -I$(SRCDIR)/$(DSP_DIR) -I$(SRCDIR)/$(MIXER_DIR)
-
-
-#### バージョン毎の設定
-
-ifdef	X11_VERSION
-
-#
-# X11 バージョンでのサウンド設定
-#
-
-SOUND_OBJS	= $(SOUND_OBJS_BASE)		\
-		  $(SD_X11_DIR)/audio.o		\
-		  $(SOUND_OBJS_UNIX)		\
-		  $(SOUND_OBJS.$(ARCH))
-
-
-#
-# サウンド有効時のコンパイルオプション
-#	-DHAVE_SNPRINTF, -DHAVE_VSNPRINTF は不要のはず…
-
-CFLAGS.linux      = -DSYSDEP_DSP_OSS -DSYSDEP_MIXER_OSS -DHAVE_SNPRINTF -DHAVE_VSNPRINTF
-CFLAGS.freebsd    = -DSYSDEP_DSP_OSS -DSYSDEP_MIXER_OSS -DHAVE_SNPRINTF -DHAVE_VSNPRINTF
-CFLAGS.netbsd     = -DSYSDEP_DSP_NETBSD -DHAVE_SNPRINTF -DHAVE_VSNPRINTF
-CFLAGS.openbsd    = -DSYSDEP_DSP_NETBSD -DHAVE_SNPRINTF -DHAVE_VSNPRINTF
-CFLAGS.solaris    = -DSYSDEP_DSP_SOLARIS -DSYSDEP_MIXER_SOLARIS
-CFLAGS.next       = -DSYSDEP_DSP_SOUNDKIT -DBSD43
-CFLAGS.macosx     = -DSYSDEP_DSP_COREAUDIO
-CFLAGS.nto        = -DSYSDEP_DSP_ALSA -DSYSDEP_MIXER_ALSA
-CFLAGS.irix       = -DSYSDEP_DSP_IRIX -DHAVE_SNPRINTF
-CFLAGS.irix_al    = -DSYSDEP_DSP_IRIX -DHAVE_SNPRINTF
-CFLAGS.beos       = `$(SDL_CONFIG) --cflags` -DSYSDEP_DSP_SDL
-CFLAGS.generic    =
-#these need to be converted to plugins first
-#CFLAGS.aix        = -DSYSDEP_DSP_AIX -I/usr/include/UMS -I/usr/lpp/som/include
-
-SOUND_CFLAGS	+= -D__ARCH_$(ARCH) $(CFLAGS.$(ARCH)) $(SOUND_CFLAGS_UNIX)
-
-
-#
-# サウンド有効時のライブラリ指定
-#	関係無いのも含まれていそう………
-
-LIBS.solaris       = -lnsl -lsocket
-LIBS.irix          = -laudio
-LIBS.irix_al       = -laudio
-LIBS.aix           = -lUMSobj
-LIBS.next	   = -framework SoundKit
-LIBS.macosx	   = -framework CoreAudio
-#LIBS.macosx	   = -framework AudioUnit -framework CoreServices
-#LIBS.openbsd       = -lossaudio
-LIBS.nto	   = -lsocket -lasound
-LIBS.beos          = `$(SDL_CONFIG) --libs`
-
-SOUND_LIBS	= $(LIBS.$(ARCH)) -lm
-
-
-#
-# 追加サウンドデバイス指定時の、追加設定
-#
-
-ifdef SOUND_ESOUND
-SOUND_CFLAGS += -DSYSDEP_DSP_ESOUND `esd-config --cflags`
-SOUND_LIBS   += `esd-config --libs`
-SOUND_OBJS   += $(DSP_DIR)/esound.o
-endif
-
-ifdef SOUND_ALSA
-SOUND_CFLAGS += -DSYSDEP_DSP_ALSA -DSYSDEP_MIXER_ALSA
-SOUND_LIBS   += -lasound
-SOUND_OBJS   += $(DSP_DIR)/alsa.o $(MIXER_DIR)/alsa.o
-endif
-
-ifdef SOUND_ARTS_TEIRA
-SOUND_CFLAGS += -DSYSDEP_DSP_ARTS_TEIRA `artsc-config --cflags`
-SOUND_LIBS   += `artsc-config --libs`
-SOUND_OBJS   += $(DSP_DIR)/artssound.o
-endif
-
-ifdef SOUND_ARTS_SMOTEK
-SOUND_CFLAGS += -DSYSDEP_DSP_ARTS_SMOTEK `artsc-config --cflags`
-SOUND_LIBS   += `artsc-config --libs`
-SOUND_OBJS   += $(DSP_DIR)/arts.o
-endif
-
-ifdef SOUND_SDL
-SOUND_CFLAGS += -DSYSDEP_DSP_SDL `$(SDL_CONFIG) --cflags`
-SOUND_LIBS   += `$(SDL_CONFIG) --libs`
-SOUND_OBJS   += $(DSP_DIR)/sdl.o
-endif
-
-ifdef SOUND_SDL2
-SOUND_CFLAGS += -DSYSDEP_DSP_SDL2 `$(SDL2_CONFIG) --cflags`
-SOUND_LIBS   += `$(SDL2_CONFIG) --libs`
-SOUND_OBJS   += $(DSP_DIR)/sdl2.o
-endif
-
-ifdef SOUND_WAVEOUT
-SOUND_CFLAGS += -DSYSDEP_DSP_WAVEOUT
-SOUND_OBJS   += $(DSP_DIR)/waveout.o
-endif
-
-
-
-else
-ifdef	SDL_VERSION
-
-#
-# SDL バージョンでのサウンド設定
-#
-
-SOUND_OBJS	= $(SOUND_OBJS_BASE)		\
-		  $(SD_SDL_DIR)/audio.o			\
-		  $(SD_SDL_DIR)/sdl.o
-
-SOUND_CFLAGS	+= -I$(SRCDIR)/$(SD_SDL_DIR) -DSYSDEP_DSP_SDL
-
-
-else
-ifdef	SDL2_VERSION
 
 #
 # SDL2 バージョンでのサウンド設定
 #
 
 SOUND_OBJS	= $(SOUND_OBJS_BASE)		\
-		  $(SD_SDL2_DIR)/audio.o		\
-		  $(SD_SDL2_DIR)/sdl2.o
-
-SOUND_CFLAGS	+= -I$(SRCDIR)/$(SD_SDL2_DIR) -DSYSDEP_DSP_SDL2
-
-
-else
-ifdef	GTK_VERSION
-
-#
-# GTK バージョンでのサウンド設定
-#	SDL にて鳴らすことにする
-
-SOUND_OBJS	= $(SOUND_OBJS_BASE)		\
 		  $(SD_SDL_DIR)/audio.o		\
 		  $(SD_SDL_DIR)/sdl.o
-SOUND_CFLAGS	+= -I$(SRCDIR)/$(SD_SDL_DIR) -DSYSDEP_DSP_SDL `$(SDL_CONFIG) --cflags`
-SOUND_LIBS	+= `$(SDL_CONFIG) --libs`
 
-
-#	OSSで鳴らそうとしたが、ノイズだらけでうまく鳴らない……
-
-#SOUND_OBJS	= $(SOUND_OBJS_BASE)		\
-#		  $(SD_X11_DIR)/audio.o		\
-#		  $(SOUND_OBJS_UNIX)		\
-#		  $(SOUND_OBJS.$(ARCH))
-#SOUND_CFLAGS	+= -D__ARCH_$(ARCH) -DSYSDEP_DSP_OSS -DSYSDEP_MIXER_OSS -DHAVE_SNPRINTF -DHAVE_VSNPRINTF $(SOUND_CFLAGS_UNIX)
-#SOUND_LIBS	= -lm
-
-else
-
-#
-# MINI バージョンでのサウンド設定
-#	コンパイル検証のみ。音は出ない
-
-SOUND_OBJS	= $(SOUND_OBJS_BASE)	\
-		  MINI/audio.o
-#SOUND_CFLAGS	+=
+SOUND_INCDIR    += $(SD_SDL_DIR)
+SOUND_CFLAGS	+= -DSYSDEP_DSP_SDL
+#SOUND_CXXFLAGS	+=
 SOUND_LIBS	= -lm
 
-endif
-endif
-endif
-endif
 
 
 
@@ -871,7 +383,7 @@ endif
 
 ifdef	USE_FMGEN
 
-FMGEN_DIR	= fmgen
+FMGEN_DIR	= $(SNDDRV_DIR)/fmgen
 FMGEN_OBJ	= $(SD_Q88_DIR)/2203fmgen.o	\
 		  $(SD_Q88_DIR)/2608fmgen.o	\
 		  $(FMGEN_DIR)/fmgen.o		\
@@ -880,8 +392,11 @@ FMGEN_OBJ	= $(SD_Q88_DIR)/2203fmgen.o	\
 		  $(FMGEN_DIR)/psg.o
 
 CFLAGS		+= -DUSE_FMGEN
+CXXFLAGS	+= -DUSE_FMGEN
 
-SOUND_CFLAGS	+= -I$(SRCDIR)/$(FMGEN_DIR)
+SOUND_INCDIR    += $(FMGEN_DIR)
+#SOUND_CFLAGS	+=
+#SOUND_CXXFLAGS	+=
 
 SOUND_OBJS	+= $(FMGEN_OBJ)
 
@@ -898,133 +413,227 @@ endif
 #######################################################################
 
 
-ifdef	X11_VERSION
-PROGRAM = quasi88
-else
-ifdef	SDL_VERSION
-PROGRAM = quasi88.sdl
-else
-ifdef	SDL2_VERSION
 PROGRAM = quasi88.sdl2
-else
-ifdef	GTK_VERSION
-PROGRAM = quasi88.gtk
-else
-PROGRAM = quasi88.mini
-endif
-endif
-endif
-endif
+
+OSDEP_DIR =	osdepend
+SYSDEP_DIR =	sysdepend
+OSDEPEND_DIR  = $(OSDEP_DIR)/unix
+SYSDEPEND_DIR = $(SYSDEP_DIR)/sdl2
+OBJECT =	$(SYSDEPEND_DIR)/graph.o	\
+		$(SYSDEPEND_DIR)/touchkey.o	\
+		$(SYSDEPEND_DIR)/wait.o		\
+		$(SYSDEPEND_DIR)/event.o	\
+		$(SYSDEPEND_DIR)/main.o		\
+		$(OSDEPEND_DIR)/file-op.o
+
+PC88_DIR	= pc88
+SCREEN_DIR	= screen
+TK_DIR		= tk
+UI_DIR		= ui
+SNDDRV_DIR	= snddrv
+OBJECT +=	\
+		alarm.o					\
+		control.o				\
+		debug.o					\
+		emu.o					\
+		fname.o					\
+		getconf.o				\
+		icon.o					\
+		menu.o					\
+		monitor.o				\
+		pause.o					\
+		quasi88.o				\
+		run_control_bridge.o			\
+		utility.o				\
+		$(PC88_DIR)/basic.o			\
+		$(PC88_DIR)/crtcdmac.o			\
+		$(PC88_DIR)/fdc.o			\
+		$(PC88_DIR)/image.o			\
+		$(PC88_DIR)/intr.o			\
+		$(PC88_DIR)/keyboard.o			\
+		$(PC88_DIR)/memory.o			\
+		$(PC88_DIR)/pc88main.o			\
+		$(PC88_DIR)/pc88sub.o			\
+		$(PC88_DIR)/pio.o			\
+		$(PC88_DIR)/romaji.o			\
+		$(PC88_DIR)/soundbd.o			\
+		$(PC88_DIR)/suspend.o			\
+		$(PC88_DIR)/z80.o			\
+		$(PC88_DIR)/z80-debug.o			\
+		$(SCREEN_DIR)/color.o			\
+		$(SCREEN_DIR)/menu-screen.o		\
+		$(SCREEN_DIR)/putimage.o		\
+		$(SCREEN_DIR)/screen.o			\
+		$(SCREEN_DIR)/screen-8bpp.o		\
+		$(SCREEN_DIR)/screen-16bpp.o		\
+		$(SCREEN_DIR)/screen-32bpp.o		\
+		$(SCREEN_DIR)/screen-snapshot.o		\
+		$(SCREEN_DIR)/snapshot.o		\
+		$(TK_DIR)/q8tk-draw.o			\
+		$(TK_DIR)/q8tk-event.o			\
+		$(TK_DIR)/q8tk-glib.o			\
+		$(TK_DIR)/q8tk.o			\
+		$(TK_DIR)/q8tk/q8tk-accel.o		\
+		$(TK_DIR)/q8tk/q8tk-adjustment.o	\
+		$(TK_DIR)/q8tk/q8tk-button.o		\
+		$(TK_DIR)/q8tk/q8tk-combo.o		\
+		$(TK_DIR)/q8tk/q8tk-common.o		\
+		$(TK_DIR)/q8tk/q8tk-container.o		\
+		$(TK_DIR)/q8tk/q8tk-entry.o		\
+		$(TK_DIR)/q8tk/q8tk-frame.o		\
+		$(TK_DIR)/q8tk/q8tk-fselection.o	\
+		$(TK_DIR)/q8tk/q8tk-fviewer.o		\
+		$(TK_DIR)/q8tk/q8tk-grab.o		\
+		$(TK_DIR)/q8tk/q8tk-item.o		\
+		$(TK_DIR)/q8tk/q8tk-label.o		\
+		$(TK_DIR)/q8tk/q8tk-listbox.o		\
+		$(TK_DIR)/q8tk/q8tk-misc.o		\
+		$(TK_DIR)/q8tk/q8tk-notebook.o		\
+		$(TK_DIR)/q8tk/q8tk-signal.o		\
+		$(TK_DIR)/q8tk/q8tk-widget.o		\
+		$(TK_DIR)/q8tk/q8tk-window.o		\
+		$(UI_DIR)/diskchange-top.o		\
+		$(UI_DIR)/menu-top.o			\
+		$(UI_DIR)/pause-top.o			\
+		$(UI_DIR)/quit-top.o			\
+		$(UI_DIR)/reset-top.o			\
+		$(UI_DIR)/speedup-top.o			\
+		$(UI_DIR)/statusbar.o			\
+		$(UI_DIR)/toolbar.o			\
+		$(UI_DIR)/menu/menu-about.o		\
+		$(UI_DIR)/menu/menu-common.o		\
+		$(UI_DIR)/menu/menu-cpu.o		\
+		$(UI_DIR)/menu/menu-disk.o		\
+		$(UI_DIR)/menu/menu-graph.o		\
+		$(UI_DIR)/menu/menu-key.o		\
+		$(UI_DIR)/menu/menu-misc.o		\
+		$(UI_DIR)/menu/menu-mouse.o		\
+		$(UI_DIR)/menu/menu-reset.o		\
+		$(UI_DIR)/menu/menu-tape.o		\
+		$(UI_DIR)/menu/menu-volume.o		\
+		$(SOUND_OBJS)
+
+# ソースコードディレクトリ
+
+SRCDIR	= src
 
 
-ifdef	X11_VERSION
-OBJECT = X11/graph.o X11/wait.o X11/event.o X11/joystick.o X11/main.o FUNIX/file-op.o
-else
-ifdef	SDL_VERSION
-OBJECT = SDL/graph.o SDL/wait.o SDL/event.o SDL/main.o FUNIX/file-op.o
-else
-ifdef	SDL2_VERSION
-OBJECT = SDL2/graph.o SDL2/wait.o SDL2/main.o FUNIX/file-op.o SDL2/event.o
-else
-ifdef	GTK_VERSION
-OBJECT = GTK/graph.o GTK/wait.o GTK/event.o GTK/main.o GTK/menubar.o FUNIX/file-op.o
-else
-OBJECT = MINI/graph.o MINI/wait.o MINI/event.o MINI/main.o FDUMMY/file-op.o
-endif
-endif
-endif
-endif
+# インクルードディレクトリ
+
+INCDIR =	$(OSDEP_DIR)			\
+		$(SYSDEP_DIR)			\
+		$(OSDEPEND_DIR)			\
+		$(SYSDEPEND_DIR)		\
+		$(PC88_DIR)			\
+		$(SCREEN_DIR)			\
+		$(SCREEN_DIR)/func		\
+		$(SCREEN_DIR)/func/macro	\
+		$(TK_DIR)			\
+		$(TK_DIR)/q8tk			\
+		$(UI_DIR)			\
+		$(UI_DIR)/menu			\
+		$(SNDDRV_DIR)
+
+INCLUDES =	-I$(SRCDIR) $(addprefix -I$(SRCDIR)/, $(INCDIR))
+SOUND_INCLUDES =            $(addprefix -I$(SRCDIR)/, $(SOUND_INCDIR))
 
 
-OBJECT += quasi88.o emu.o memory.o status.o getconf.o \
-	  pc88main.o crtcdmac.o soundbd.o pio.o screen.o intr.o \
-	  pc88sub.o fdc.o image.o monitor.o basic.o \
-	  menu.o menu-screen.o q8tk.o q8tk-glib.o suspend.o \
-	  keyboard.o romaji.o pause.o run_control_bridge.o \
-	  z80.o z80-debug.o snapshot.o \
-	  screen-8bpp.o screen-16bpp.o screen-32bpp.o screen-snapshot.o \
-	  $(SOUND_OBJS)
+# 最終的な C/C++フラグ
 
-CFLAGS += -DROM_DIR='"$(ROMDIR)"' -DDISK_DIR='"$(DISKDIR)"' \
-	  -DTAPE_DIR='"$(TAPEDIR)"' $(USEINLINE) -DCLIB_DECL= 
+CFLAGS +=	-DROM_DIR='"$(ROMDIR)"'		\
+		-DDISK_DIR='"$(DISKDIR)"'	\
+		-DTAPE_DIR='"$(TAPEDIR)"'	\
+		-DSNAP_DIR='"$(SNAPDIR)"'	\
+		-DSTATE_DIR='"$(STATEDIR)"'	\
+		-DL_CFG_DIR='"$(LCFGDIR)"'	\
+		-DG_CFG_DIR='"$(GCFGDIR)"'	\
+		$(USEINLINE)			\
+		-DCLIB_DECL=
+CFLAGS :=	$(INCLUDES) $(CFLAGS)
+CXXFLAGS +=	-DCLIB_DECL=
+CXXFLAGS :=	$(INCLUDES) $(CXXFLAGS)
 
-CXXFLAGS += $(CFLAGS)
+SOUND_CFLAGS +=		$(SOUND_INCLUDES)
+SOUND_CXXFLAGS +=	$(SOUND_INCLUDES)
 
 LIBS   += $(SOUND_LIBS)
 
-###
 
-SRCDIR		= src
+# 中間ファイルディレクトリ
 
-ifdef	X11_VERSION
 OBJDIR		= obj
-OBJDIRS		+= $(OBJDIR) $(OBJDIR)/X11 $(OBJDIR)/FUNIX
-else
-ifdef	SDL_VERSION
-OBJDIR		= obj.sdl
-OBJDIRS		+= $(OBJDIR) $(OBJDIR)/SDL $(OBJDIR)/FUNIX
-else
-ifdef	SDL2_VERSION
-OBJDIR		= obj.sdl2
-OBJDIRS		+= $(OBJDIR) $(OBJDIR)/SDL2 $(OBJDIR)/FUNIX
-else
-ifdef	GTK_VERSION
-OBJDIR		= obj.gtk
-OBJDIRS		+= $(OBJDIR) $(OBJDIR)/GTK $(OBJDIR)/FUNIX
-else
-OBJDIR		= obj.mini
-OBJDIRS		+= $(OBJDIR) $(OBJDIR)/MINI $(OBJDIR)/FDUMMY
-endif
-endif
-endif
-endif
 
-OBJDIRS		+= $(addprefix $(OBJDIR)/, \
-		  	$(SNDDRV_DIR) $(FMGEN_DIR) \
-		  	$(SD_Q88_DIR) $(SD_X11_DIR) $(SD_SDL_DIR) $(SD_SDL2_DIR) \
-			$(SRC_DIR) $(SOUND_DIR) $(UNIX_DIR) \
-			$(SYSDEP_DIR) $(DSP_DIR) $(MIXER_DIR) )
-
-OBJECTS		= $(addprefix $(OBJDIR)/, $(OBJECT) )
-
+OBJECTS		= $(addprefix $(OBJDIR)/, $(OBJECT))
+DEPENDS		= $(patsubst %.o, %.d, $(OBJECTS))
 
 
 ###
 
-all:		$(OBJDIRS) $(PROGRAM)
+all:		$(OBJDIR) $(PROGRAM)
 
-$(OBJDIRS):
-		-mkdir $@
+$(OBJDIR):
+		-mkdir -p $@
 
 $(PROGRAM):	$(OBJECTS)
 		$(LD) $(OBJECTS) $(LIBS) -lm -o $(PROGRAM) 
 
 
-$(OBJDIR)/$(SNDDRV_DIR)/%.o: $(SRCDIR)/$(SNDDRV_DIR)/%.c
-		$(CC) $(CFLAGS) $(SOUND_CFLAGS) -o $@ -c $<
+$(OBJDIR)/$(XMAME_DIR)/%.o: $(SRCDIR)/$(XMAME_DIR)/%.c
+		@-mkdir -p $(dir $@)
+		$(CC) $(CFLAGS) $(SOUND_CFLAGS) $(DEBUG_CFLAGS) -o $@ -c $<
 
-$(OBJDIR)/$(SNDDRV_DIR)/%.o: $(SRCDIR)/$(SNDDRV_DIR)/%.m
-		$(CC) $(CFLAGS) $(SOUND_CFLAGS) -o $@ -c $<
+$(OBJDIR)/$(XMAME_DIR)/%.o: $(SRCDIR)/$(XMAME_DIR)/%.m
+		@-mkdir -p $(dir $@)
+		$(CC) $(CFLAGS) $(SOUND_CFLAGS) $(DEBUG_CFLAGS) -o $@ -c $<
 
-$(OBJDIR)/$(SNDDRV_DIR)/%.o: $(SRCDIR)/$(SNDDRV_DIR)/%.cpp
-		$(CXX) $(CXXFLAGS) $(SOUND_CFLAGS) -o $@ -c $<
+$(OBJDIR)/$(XMAME_DIR)/%.o: $(SRCDIR)/$(XMAME_DIR)/%.cpp
+		@-mkdir -p $(dir $@)
+		$(CXX) $(CXXFLAGS) $(SOUND_CXXFLAGS) $(DEBUG_CXXFLAGS) -o $@ -c $<
 
 $(OBJDIR)/$(FMGEN_DIR)/%.o: $(SRCDIR)/$(FMGEN_DIR)/%.cpp
-		$(CXX) $(CXXFLAGS) $(SOUND_CFLAGS) -o $@ -c $<
+		@-mkdir -p $(dir $@)
+		$(CXX) $(CXXFLAGS) $(SOUND_CXXFLAGS) $(DEBUG_CXXFLAGS) -o $@ -c $<
 
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.c
-		$(CC) $(CFLAGS) -o $@ -c $<
-
-$(OBJDIR)/%.o: $(SRCDIR)/%.m
-		$(CC) $(CFLAGS) -o $@ -c $<
+		@-mkdir -p $(dir $@)
+		$(CC) $(CFLAGS) $(DEBUG_CFLAGS) -o $@ -c $<
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cpp
-		$(CXX) $(CXXFLAGS) -o $@ -c $<
+		@-mkdir -p $(dir $@)
+		$(CXX) $(CXXFLAGS) $(DEBUG_CXXFLAGS) -o $@ -c $<
+
+
+$(OBJDIR)/$(XMAME_DIR)/%.d: $(SRCDIR)/$(XMAME_DIR)/%.c
+		@echo create dependency-file $@
+		@-mkdir -p $(dir $@)
+		@$(CC) -MM $(CFLAGS) $(SOUND_CFLAGS) $< | sed 's/$(notdir $*)\.o:/$(subst /,\/,$(patsubst %.d,%.o,$@) $@):/' > $@ ; [ -s $@ ] || rm -f $@
+
+$(OBJDIR)/$(XMAME_DIR)/%.d: $(SRCDIR)/$(XMAME_DIR)/%.cpp
+		@echo create dependency-file $@
+		@-mkdir -p $(dir $@)
+		@$(CXX) -MM $(CXXFLAGS) $(SOUND_CXXFLAGS) $< | sed 's/$(notdir $*)\.o:/$(subst /,\/,$(patsubst %.d,%.o,$@) $@):/' > $@ ; [ -s $@ ] || rm -f $@
+
+$(OBJDIR)/$(FMGEN_DIR)/%.d: $(SRCDIR)/$(FMGEN_DIR)/%.cpp
+		@echo create dependency-file $@
+		@-mkdir -p $(dir $@)
+		@$(CXX) -MM $(CXXFLAGS) $(SOUND_CXXFLAGS) $< | sed 's/$(notdir $*)\.o:/$(subst /,\/,$(patsubst %.d,%.o,$@) $@):/' > $@ ; [ -s $@ ] || rm -f $@
+
+
+$(OBJDIR)/%.d: $(SRCDIR)/%.c
+		@echo create dependency-file $@
+		@-mkdir -p $(dir $@)
+		@$(CC) -MM $(CFLAGS) $< | sed 's/$(notdir $*)\.o:/$(subst /,\/,$(patsubst %.d,%.o,$@) $@):/' > $@ ; [ -s $@ ] || rm -f $@
+
+$(OBJDIR)/%.d: $(SRCDIR)/%.cpp
+		@echo create dependency-file $@
+		@-mkdir -p $(dir $@)
+		@$(CC) -MM $(CXXFLAGS) $< | sed 's/$(notdir $*)\.o:/$(subst /,\/,$(patsubst %.d,%.o,$@) $@):/' > $@ ; [ -s $@ ] || rm -f $@
 
 
 $(OBJDIR)/%.s: $(SRCDIR)/%.c
-		$(CC) $(CFLAGS) $(SOUND_CFLAGS) -o $@ -S $<
+		@-mkdir -p $(dir $@)
+		$(CC) $(CFLAGS) $(SOUND_CFLAGS) $(DEBUG_CFLAGS) -o $@ -S $<
 
 
 clean:
@@ -1038,71 +647,16 @@ debug:
 # インストールに関する設定
 #
 
-INSTALL_TARGET = install-nosuid
-ifdef	X11_VERSION
-ifdef	X11_DGA
-INSTALL_TARGET = install-suid
-endif
-endif
-
-
-install:	$(INSTALL_TARGET)
-
-install-nosuid:
+install:
 		@echo installing binaries under $(BINDIR)...
-		@cp $(PROGRAM) $(BINDIR)
-
-install-suid:
-		@echo installing binaries under $(BINDIR)...
-		@cp $(PROGRAM) $(BINDIR)
-		@chmod 4555 $(BINDIR)/$(PROGRAM)
+		@cp $(PROGRAM) $(BINDIR)/
 
 
 #
 #
 #
+ifneq ($(MAKECMDGOALS), clean)
+-include $(DEPENDS)
+endif
 
-
-#
-# ファイルの依存関係の更新
-#
-#	make depend をすれば、 Makefile.depend が生成(更新)されます。
-#
-
-SOURCES		= $(subst $(OBJDIR)/, src/, $(OBJECTS) )
-SOURCES		:= $(patsubst %.o, %.c, $(SOURCES) )
-SOURCES		:= $(patsubst src/fmgen/%.c, src/fmgen/%.cpp, $(SOURCES) )
-SOURCES		:= $(subst src/snddrv/quasi88/2203fmgen.c, src/snddrv/quasi88/2203fmgen.cpp, $(SOURCES) )
-SOURCES		:= $(subst src/snddrv/quasi88/2608fmgen.c, src/snddrv/quasi88/2608fmgen.cpp, $(SOURCES) )
-
-TMP_FILE = Makefile.tmp
-DEP_FILE = Makefile.depend
-
-depend:
-		-@gcc -MM $(CFLAGS) $(SOUND_CFLAGS) $(SOURCES) > $(TMP_FILE)
-		-@echo '# This file is generated by gcc' >  $(DEP_FILE)
-		-@echo '#   Do not edit !'               >> $(DEP_FILE)
-		-@echo                                   >> $(DEP_FILE)
-		-@perl -ane 'if (/:/) { @L = split(); $$Z = substr( $$L[1], 0, rindex( $$L[1], "/" ) ); $$Z =~ s/^src/$(OBJDIR)/; $$L[0] = $$Z . "/" . $$L[0]; $$_ = join( " ", @L ); print "$$_\n"; } else { print "$$_"; }' $(TMP_FILE) >> $(DEP_FILE)
-		-@rm -f $(TMP_FILE)
-
-
--include $(DEP_FILE)
-
-#
-#	Mac用アプリのラッパー構成　　make mac
-#
-mac:
-	-rm -rf "$(PROGRAM).app/"
-	mkdir "$(PROGRAM).app/"
-	cp -r "osx/Contents/" "$(PROGRAM).app/Contents"
-	cp "$(PROGRAM)" "$(PROGRAM).app/Contents/MacOS/quasi88"
-
-
-# Test target for queue and state contract tests
-test_queue_state: $(OBJECTS) $(SOUND_OBJECTS) src/test_queue_state.c
-	$(CC) $(CFLAGS) -o $@ $(OBJECTS) $(SOUND_OBJECTS) src/test_queue_state.c $(LIBS) -lm
-
-.PHONY: run-test
-run-test: test_queue_state
-	./test_queue_state
+.PHONY: all clean debug install

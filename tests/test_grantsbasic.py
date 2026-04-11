@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from grants_basic.machine import GrantSearleConfig, GrantSearleMachine, InputRequestError
+from grants_basic.machine import DEFAULT_ROM_PATH, GrantSearleConfig, GrantSearleMachine, InputRequestError
 from grants_basic.z80 import ExecutionResult
 
 
@@ -144,6 +144,138 @@ class GrantsBasicRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(terminal.writes, ["Ok\r\nREADY\r\n", "\r\n"])
+
+    def test_run_terminal_maps_delete_to_backspace(self) -> None:
+        machine = GrantSearleMachine(GrantSearleConfig(rom_path=Path("/tmp/rom.bin"), max_steps=1))
+        machine._booted = True
+        machine._console = []
+        machine.run_slice = lambda max_steps: ExecutionResult(reason="step_limit", steps=max_steps, pc=0)  # type: ignore[method-assign]
+
+        class FakeTerminal:
+            def __init__(self) -> None:
+                self._reads = [0x7F, 0x08, 0x04]
+
+            def __enter__(self) -> "FakeTerminal":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def write(self, text: str) -> None:
+                del text
+
+            def input_ready(self) -> bool:
+                return bool(self._reads)
+
+            def read_byte(self) -> int:
+                return self._reads.pop(0)
+
+        with patch("sys.stdin.isatty", return_value=True), patch("sys.stdout.isatty", return_value=True), patch(
+            "grants_basic.machine.RawTerminal",
+            return_value=FakeTerminal(),
+        ):
+            result = machine.run_terminal()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(list(machine.acia.rx_queue), [0x08, 0x08])
+
+    def test_format_terminal_output_renders_backspace_as_erase_sequence(self) -> None:
+        machine = GrantSearleMachine(GrantSearleConfig(rom_path=Path("/tmp/rom.bin")))
+
+        self.assertEqual(machine._format_terminal_output("AB\x08\n"), "AB\x08 \x08\r\n")
+
+    def test_real_rom_treats_at_as_line_kill_in_direct_mode(self) -> None:
+        if not DEFAULT_ROM_PATH.is_file():
+            self.skipTest(f"ROM not available: {DEFAULT_ROM_PATH}")
+
+        machine = GrantSearleMachine(GrantSearleConfig(rom_path=DEFAULT_ROM_PATH))
+        machine.boot()
+        machine._console_offset = len(machine._console)
+
+        machine.acia.receive_byte(ord("@"))
+        machine._run_until_input_idle(step_budget=machine.config.prompt_step_budget, require_activity=True)
+
+        self.assertEqual(machine.consume_console_text(), "@\n")
+
+    def test_run_terminal_renders_backspace_output_as_erase_sequence(self) -> None:
+        machine = GrantSearleMachine(GrantSearleConfig(rom_path=Path("/tmp/rom.bin"), max_steps=1))
+        machine._booted = True
+        machine._console = list("AB\x08")
+        machine.run_slice = lambda max_steps: ExecutionResult(reason="step_limit", steps=max_steps, pc=0)  # type: ignore[method-assign]
+
+        class FakeTerminal:
+            def __init__(self) -> None:
+                self.writes: list[str] = []
+
+            def __enter__(self) -> "FakeTerminal":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def write(self, text: str) -> None:
+                self.writes.append(text)
+
+            def input_ready(self) -> bool:
+                return True
+
+            def read_byte(self) -> int:
+                return 0x04
+
+        terminal = FakeTerminal()
+        with patch("sys.stdin.isatty", return_value=True), patch("sys.stdout.isatty", return_value=True), patch(
+            "grants_basic.machine.RawTerminal",
+            return_value=terminal,
+        ):
+            result = machine.run_terminal()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(terminal.writes, ["AB\x08 \x08", "\r\n"])
+
+    def test_run_terminal_uses_small_interactive_step_budget(self) -> None:
+        config = GrantSearleConfig(
+            rom_path=Path("/tmp/rom.bin"),
+            max_steps=200_000,
+            interactive_max_steps=7,
+        )
+        machine = GrantSearleMachine(config)
+        machine._booted = True
+        machine._console = []
+        slice_calls: list[int] = []
+
+        def fake_run_slice(max_steps: int) -> ExecutionResult:
+            slice_calls.append(max_steps)
+            return ExecutionResult(reason="step_limit", steps=max_steps, pc=0)
+
+        machine.run_slice = fake_run_slice  # type: ignore[method-assign]
+
+        class FakeTerminal:
+            def __init__(self) -> None:
+                self._reads = [ord("A"), 0x04]
+
+            def __enter__(self) -> "FakeTerminal":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def write(self, text: str) -> None:
+                del text
+
+            def input_ready(self) -> bool:
+                return bool(self._reads)
+
+            def read_byte(self) -> int:
+                return self._reads.pop(0)
+
+        with patch("sys.stdin.isatty", return_value=True), patch("sys.stdout.isatty", return_value=True), patch(
+            "grants_basic.machine.RawTerminal",
+            return_value=FakeTerminal(),
+        ):
+            result = machine.run_terminal()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(slice_calls, [7])
 
 
 if __name__ == "__main__":

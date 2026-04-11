@@ -10,12 +10,13 @@ usage() {
 Usage:
   $USAGE_NAME
   $USAGE_NAME --file PROGRAM.bas
-  $USAGE_NAME --run --file PROGRAM.bas
+  $USAGE_NAME --run --file PROGRAM.bas [--timeout SECONDS]
 
 What it does:
   - With no --file, start FM-11 F-BASIC interactively
   - With --file PROGRAM.bas, load a line-numbered BASIC file and stay interactive
   - With --run --file PROGRAM.bas, run the file, print output, and exit
+  - Use --timeout only when you want to cap file-run wall time; default is unlimited
 EOF
 }
 

@@ -20,6 +20,7 @@ from run_control_bridge import (
     RUN_ERR_HOOK_UNCONFIGURED,
     RUN_ERR_OK,
     RUN_ERR_PROTOCOL,
+    RUN_ERR_QUEUE_FULL,
     RUN_ERR_TIMEOUT,
     RunControlSession,
 )
@@ -39,6 +40,33 @@ _REQUIRED_ROM_ALIASES: tuple[tuple[str, ...], ...] = (
 )
 
 
+def _screen_suffix(previous_lines: list[str], current_lines: list[str]) -> list[str]:
+    if not previous_lines:
+        return current_lines
+    prefix_length = 0
+    max_prefix = min(len(previous_lines), len(current_lines))
+    while prefix_length < max_prefix and previous_lines[prefix_length] == current_lines[prefix_length]:
+        prefix_length += 1
+    if prefix_length == len(current_lines):
+        return []
+    if prefix_length == len(previous_lines):
+        return current_lines[prefix_length:]
+
+    previous_count = len(previous_lines)
+    current_count = len(current_lines)
+    if previous_count > 1:
+        for start in range(current_count - previous_count + 1):
+            if current_lines[start : start + previous_count] == previous_lines:
+                return current_lines[start + previous_count :]
+
+    overlap = min(previous_count, current_count)
+    while overlap > 0:
+        if previous_lines[-overlap:] == current_lines[:overlap]:
+            return current_lines[overlap:]
+        overlap -= 1
+    return current_lines
+
+
 def _resolve_quasi88_bin() -> Path:
     return Path(os.environ.get("CLASSIC_BASIC_N88_QUASI88_BIN", _DEFAULT_QUASI88_BIN))
 
@@ -53,6 +81,28 @@ def _missing_required_rom_groups(rom_dir: Path) -> list[tuple[str, ...]]:
         if not any((rom_dir / candidate).is_file() for candidate in aliases):
             missing.append(aliases)
     return missing
+
+
+def _load_program_source_lines(path: Path) -> list[str]:
+    data = path.read_bytes()
+    text = data.decode("ascii")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines: list[str] = []
+    for line_number, raw_line in enumerate(text.split("\n"), start=1):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("'"):
+            continue
+        upper = stripped.upper()
+        if upper.startswith("REM") and (len(stripped) == 3 or stripped[3] in (" ", "\t")):
+            continue
+        if not stripped[0].isdigit():
+            raise ValueError(f"line {line_number} missing line number: {stripped[:50]}")
+        lines.append(stripped)
+    if not lines:
+        raise ValueError("no executable code found in file")
+    return lines
 
 
 class N88BasicCLI:
@@ -242,24 +292,74 @@ class N88BasicCLI:
     def _send_interactive_bytes(self, data: bytes) -> None:
         if not data:
             return
+        self._echo_local_interactive_backspace(data)
+        self._echo_local_interactive_submit(data)
         if self.interactive_bridge_session is not None:
-            sequence = self._encode_bridge_sequence(data)
-            if sequence:
-                self.interactive_bridge_session.queue(sequence)
+            self._send_interactive_bridge_chunks(data)
             return
         if self.quasi88_proc is None or self.quasi88_proc.stdin is None:
             return
         self.quasi88_proc.stdin.write(data)
         self.quasi88_proc.stdin.flush()
 
-    def _encode_bridge_sequence(self, data: bytes) -> str:
-        parts: list[str] = []
+    def _echo_local_interactive_backspace(self, data: bytes) -> None:
+        if not self._interactive_line_open:
+            return
+        erase_count = sum(1 for byte in data if byte in (0x08, 0x7F))
+        if erase_count <= 0:
+            return
+        visible_erase = min(erase_count, self._interactive_line_length)
+        if visible_erase <= 0:
+            return
+        sys.stdout.write("\b \b" * visible_erase)
+        sys.stdout.flush()
+        self._interactive_line_length -= visible_erase
+
+    def _echo_local_interactive_submit(self, data: bytes) -> None:
+        if not self._interactive_line_open:
+            return
+        if not any(byte in (10, 13) for byte in data):
+            return
+        sys.stdout.write("\r\n")
+        sys.stdout.flush()
+        self._interactive_line_open = False
+        self._interactive_line_length = 0
+
+    def _send_interactive_bridge_chunks(self, data: bytes, *, max_chunk_tokens: int = 24) -> None:
+        assert self.interactive_bridge_session is not None
+        if max_chunk_tokens <= 0:
+            raise ValueError("max_chunk_tokens must be positive")
+        tokens = self._encode_bridge_tokens(data)
+        for index in range(0, len(tokens), max_chunk_tokens):
+            chunk = "".join(tokens[index : index + max_chunk_tokens])
+            if chunk:
+                self._queue_bridge_chunk(chunk)
+
+    def _queue_bridge_chunk(self, chunk: str, *, retry_timeout: float = 1.0) -> bool:
+        assert self.interactive_bridge_session is not None
+        deadline = time.monotonic() + retry_timeout
+        while True:
+            ok, response = self.interactive_bridge_session.queue(chunk)
+            if ok:
+                return True
+            if int(response.get("code", RUN_ERR_PROTOCOL)) != RUN_ERR_QUEUE_FULL:
+                return False
+            if self.quasi88_proc is not None and self.quasi88_proc.poll() is not None:
+                return False
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+
+    def _encode_bridge_tokens(self, data: bytes) -> list[str]:
+        tokens: list[str] = []
         for byte in data:
             if byte in (10, 13):
-                parts.append("<CR>")
+                tokens.append("<CR>")
+            elif byte in (0x08, 0x7F):
+                tokens.append("\x08")
             elif 32 <= byte <= 126:
-                parts.append(chr(byte))
-        return "".join(parts)
+                tokens.append(chr(byte))
+        return tokens
 
     def _interactive_loop_step(self) -> bool:
         stdin_state = self.forward_stdin_to_quasi88(timeout=0.05)
@@ -279,7 +379,7 @@ class N88BasicCLI:
     def _forward_interactive_screen_output(self) -> int:
         assert self.interactive_bridge_session is not None
         try:
-            self.interactive_bridge_session.wait(50)
+            self.interactive_bridge_session.wait(10)
         except Exception:
             pass
         lines = self._capture_interactive_screen_lines(self.interactive_bridge_session)
@@ -380,14 +480,15 @@ class N88BasicCLI:
         text = response.get("fields", {}).get("text", "")
         lines: list[str] = []
         for raw_line in text.splitlines():
-            line = raw_line.rstrip().replace("\ufffd", "")
-            if not line.strip():
+            line = raw_line.replace("\ufffd", "")
+            stripped = line.strip()
+            if not stripped:
                 continue
             if "How many files(0-15)?" in line:
                 continue
             if self._is_function_key_guide_line(line):
                 continue
-            lines.append(line.strip())
+            lines.append(line.lstrip())
         return lines
 
     @staticmethod
@@ -420,6 +521,85 @@ class N88BasicCLI:
         self._interactive_line_length = 0
         self._startup_screen_snapshot = None
 
+    def _wait_for_screen_change_and_ready(
+        self,
+        session: RunControlSession,
+        previous_lines: list[str],
+        *,
+        timeout: float,
+    ) -> list[str] | None:
+        deadline = time.monotonic() + timeout
+        saw_change = False
+        last_lines: list[str] | None = None
+        stable_ready_polls = 0
+        while time.monotonic() < deadline:
+            lines = self._capture_interactive_screen_lines(session)
+            if lines != previous_lines:
+                saw_change = True
+            if saw_change and self._screen_has_basic_ready(lines):
+                if last_lines == lines:
+                    stable_ready_polls += 1
+                else:
+                    stable_ready_polls = 1
+                if stable_ready_polls >= 2:
+                    return lines
+            else:
+                stable_ready_polls = 0
+            last_lines = list(lines)
+            session.wait(100)
+            time.sleep(0.05)
+        return None
+
+    def _queue_program_lines(
+        self,
+        session: RunControlSession,
+        program_lines: list[str],
+        *,
+        ready_timeout: float,
+    ) -> tuple[bool, int]:
+        previous_lines = self._capture_interactive_screen_lines(session)
+        for line in program_lines:
+            ok, response = session.queue(f"{line}<CR>")
+            if not ok:
+                return False, int(response.get("code", RUN_ERR_PROTOCOL))
+            current_lines = self._wait_for_screen_change_and_ready(
+                session,
+                previous_lines,
+                timeout=ready_timeout,
+            )
+            if current_lines is None:
+                return False, RUN_ERR_TIMEOUT
+            previous_lines = current_lines
+        return True, RUN_ERR_OK
+
+    def _load_program_with_fallback(
+        self,
+        session: RunControlSession,
+        *,
+        filepath: str,
+        ready_timeout: float,
+        wait_for_ready_after_ascii_load: bool,
+    ) -> tuple[bool, int]:
+        ok, response = session.load(filepath, "ASCII")
+        if ok:
+            if wait_for_ready_after_ascii_load and not self._wait_for_basic_ready(
+                session,
+                startup_timeout=ready_timeout,
+            ):
+                return False, RUN_ERR_TIMEOUT
+            return True, RUN_ERR_OK
+
+        code = int(response.get("code", RUN_ERR_PROTOCOL))
+        if code == RUN_ERR_FILE_NOT_FOUND:
+            return False, code
+
+        program_lines = _load_program_source_lines(Path(filepath))
+        return self._queue_program_lines(
+            session,
+            program_lines,
+            ready_timeout=ready_timeout,
+        )
+
     def _enter_basic_interactive_mode(self, filepath: str | None = None) -> RunControlSession | None:
         session = RunControlSession(self._ensure_control_socket_path())
         self._startup_screen_snapshot = None
@@ -438,8 +618,13 @@ class N88BasicCLI:
             self.stop_quasi88()
             return None
         if filepath is not None:
-            ok, _ = session.load(filepath, "ASCII")
-            if not ok or not self._wait_for_basic_ready(session, startup_timeout=2.0):
+            ok, _ = self._load_program_with_fallback(
+                session,
+                filepath=filepath,
+                ready_timeout=2.0,
+                wait_for_ready_after_ascii_load=True,
+            )
+            if not ok:
                 print("error: failed to load BASIC file", file=sys.stderr)
                 session.disconnect()
                 self.stop_quasi88()
@@ -493,22 +678,7 @@ class N88BasicCLI:
             self.stop_quasi88()
 
     def _validate_line_numbers(self, filepath: str) -> None:
-        lines = Path(filepath).read_text(encoding="ascii").splitlines()
-        has_code = False
-        for line_number, raw_line in enumerate(lines, start=1):
-            stripped = raw_line.strip()
-            if not stripped:
-                continue
-            if stripped.startswith("'"):
-                continue
-            upper = stripped.upper()
-            if upper.startswith("REM") and (len(stripped) == 3 or stripped[3] in (" ", "\t")):
-                continue
-            has_code = True
-            if not stripped[0].isdigit():
-                raise ValueError(f"line {line_number} missing line number: {stripped[:50]}")
-        if not has_code:
-            raise ValueError("no executable code found in file")
+        _load_program_source_lines(Path(filepath))
 
     def _capture_run_screen_lines(self, session: RunControlSession) -> list[str]:
         try:
@@ -532,7 +702,7 @@ class N88BasicCLI:
                 line = line[len("QUASI88> ") :]
             if line == "QUASI88>":
                 continue
-            if line.strip() == _FUNCTION_KEY_GUIDE:
+            if self._is_function_key_guide_line(line):
                 continue
             if re.fullmatch(r"\*{5,}", line):
                 continue
@@ -576,19 +746,32 @@ class N88BasicCLI:
         session: RunControlSession,
         *,
         timeout_seconds: float | None,
-    ) -> tuple[bool, dict[str, object]]:
+    ) -> tuple[bool, list[str]]:
         deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
         last_state: dict[str, object] = {"lines": [], "output_lines": [], "completed": False}
+        accumulated_output: list[str] = []
+        previous_visible_lines: list[str] = []
         while deadline is None or time.monotonic() < deadline:
             session.wait(200)
             last_state = self._capture_run_screen_state(session)
+            current_output_lines = list(last_state["output_lines"])
+            # While the program is still running, the final visible line may still be
+            # in-flight and get replaced by its completed form on the next poll.
+            visible_lines = (
+                current_output_lines
+                if bool(last_state["completed"])
+                else current_output_lines[:-1]
+            )
+            for line in _screen_suffix(previous_visible_lines, visible_lines):
+                if line:
+                    accumulated_output.append(line)
+            previous_visible_lines = visible_lines
             if bool(last_state["completed"]):
-                return True, last_state
+                return True, accumulated_output
             time.sleep(0.2)
-        return False, last_state
+        return False, accumulated_output
 
-    def _emit_run_stdout(self, session: RunControlSession) -> None:
-        lines = self._capture_run_screen_state(session)["output_lines"]
+    def _emit_run_stdout(self, lines: list[str]) -> None:
         if lines:
             sys.stdout.write("\n".join(lines) + "\n")
             sys.stdout.flush()
@@ -609,15 +792,24 @@ class N88BasicCLI:
         if not self._drive_run_startup(session, startup_timeout=startup_timeout):
             print("error: n88basic batch run timed out", file=sys.stderr)
             return RUN_ERR_TIMEOUT
-        ok, response = session.load(filepath, "ASCII")
+        ok, response = self._load_program_with_fallback(
+            session,
+            filepath=filepath,
+            ready_timeout=2.0,
+            wait_for_ready_after_ascii_load=False,
+        )
         if not ok:
-            return int(response.get("code", RUN_ERR_FILE_NOT_FOUND))
+            print("error: failed to load BASIC file", file=sys.stderr)
+            return int(response)
         ok, response = session.queue("RUN<CR>")
         if not ok:
+            print("error: failed to queue RUN command", file=sys.stderr)
             return int(response.get("code", RUN_ERR_PROTOCOL))
-        completed, _ = self._poll_run_completion(session, timeout_seconds=timeout_seconds)
+        completed, output_lines = self._poll_run_completion(session, timeout_seconds=timeout_seconds)
         if completed:
-            self._emit_run_stdout(session)
+            if not output_lines:
+                output_lines = list(self._capture_run_screen_state(session)["output_lines"])
+            self._emit_run_stdout(output_lines)
             return RUN_ERR_OK
         print("error: n88basic batch run timed out", file=sys.stderr)
         return RUN_ERR_TIMEOUT

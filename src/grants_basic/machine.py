@@ -49,6 +49,7 @@ class GrantSearleConfig:
     max_steps: int = 200_000
     boot_step_budget: int = 10_000_000
     prompt_step_budget: int = 10_000_000
+    interactive_max_steps: int = 2_000
 
 
 class GrantSearleMachine:
@@ -130,18 +131,24 @@ class GrantSearleMachine:
         with RawTerminal() as terminal:
             terminal.write(self._format_terminal_output(self.consume_console_text()))
             while True:
-                self.run_slice(self.config.max_steps)
-                out = self.consume_console_text()
-                if out:
-                    terminal.write(self._format_terminal_output(out))
                 if terminal.input_ready():
                     value = terminal.read_byte()
                     if value == 0x04:
                         terminal.write("\r\n")
                         return 0
-                    self.acia.receive_byte(0x0D if value == 0x0A else value)
-                else:
-                    time.sleep(0.005)
+                    if value == 0x0A:
+                        normalized = 0x0D
+                    elif value in (0x08, 0x7F):
+                        normalized = 0x08
+                    else:
+                        normalized = value
+                    self.acia.receive_byte(normalized)
+                self.run_slice(self.config.interactive_max_steps)
+                out = self.consume_console_text()
+                if out:
+                    terminal.write(self._format_terminal_output(out))
+                if not terminal.input_ready():
+                    time.sleep(0.001)
 
     def run_slice(self, max_steps: int) -> ExecutionResult:
         steps = 0
@@ -178,7 +185,15 @@ class GrantSearleMachine:
             self._console.append(char)
 
     def _format_terminal_output(self, text: str) -> str:
-        return text.replace("\n", "\r\n")
+        formatted: list[str] = []
+        for char in text:
+            if char == "\n":
+                formatted.append("\r\n")
+            elif char == "\x08":
+                formatted.append("\x08 \x08")
+            else:
+                formatted.append(char)
+        return "".join(formatted)
 
     def _run_until_output_contains(self, needle: str, *, step_budget: int) -> None:
         total = 0

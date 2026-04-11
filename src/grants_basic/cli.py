@@ -24,6 +24,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=int(os.environ.get("GRANTS_BASIC_MAX_STEPS", "200000")),
         help="Instruction budget per execution slice",
     )
+    parser.add_argument(
+        "--boot-step-budget",
+        type=int,
+        default=int(os.environ.get("GRANTS_BASIC_BOOT_STEP_BUDGET", "10000000")),
+        help="Instruction budget while waiting for the initial Memory top? prompt",
+    )
+    parser.add_argument(
+        "--prompt-step-budget",
+        type=int,
+        default=int(os.environ.get("GRANTS_BASIC_PROMPT_STEP_BUDGET", "10000000")),
+        help="Instruction budget while loading lines and waiting for the BASIC prompt to settle",
+    )
     return parser
 
 
@@ -48,7 +60,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.run and args.file is None:
         parser.error("--run requires --file")
-    config = GrantSearleConfig(rom_path=args.rom, max_steps=args.max_steps)
+    config = GrantSearleConfig(
+        rom_path=args.rom,
+        max_steps=args.max_steps,
+        boot_step_budget=args.boot_step_budget,
+        prompt_step_budget=args.prompt_step_budget,
+    )
     machine = GrantSearleMachine(config)
     try:
         _install_timeout(args.timeout)

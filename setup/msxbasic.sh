@@ -6,12 +6,12 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DOWNLOAD_DIR="${ROOT_DIR}/downloads"
 MSX_DIR="${DOWNLOAD_DIR}/msx"
 USAGE_NAME="${CLASSIC_BASIC_USAGE_NAME:-$0}"
-ARCHIVE_PATH="${DOWNLOAD_DIR}/neo-kobe-emulator-pack-2013-08-17.7z"
-DOWNLOAD_URL="${CLASSIC_BASIC_MSXBASIC_NEO_KOBE_URL:-https://archive.org/download/neo-kobe-emulator-pack-2013-08-17.7z/Neo%20Kobe%20emulator%20pack%202013-08-17.7z}"
+ARCHIVE_PATH="${DOWNLOAD_DIR}/vg802020.zip"
+DOWNLOAD_URL="${CLASSIC_BASIC_MSXBASIC_ROM_URL:-https://archive.org/download/mame-0.221-roms-merged/vg802020.zip}"
 DEST_ROM="${MSX_DIR}/msx1-basic-bios.rom"
 DEST_VG8020_ROM="${MSX_DIR}/vg8020-20_basic-bios1.rom"
 TARGET_ROM_SHA256="1c85dac5536fa3ba6f2cb70deba02ff680b34ac6cc787d2977258bd663a99555"
-ARCHIVE_MEMBER="MSX/OpenMSX 0.9.1/share/machines/Philips_VG_8020-20/roms/vg8020-20_basic-bios1.rom"
+ARCHIVE_MEMBER="8020-20bios.rom"
 
 die() {
   echo "error: $*" >&2
@@ -79,12 +79,12 @@ Usage:
   $USAGE_NAME [--archive PATH] [--download-url URL] [--force-download]
 
 What it does:
-  1. Download the Neo Kobe emulator pack if needed
+  1. Download vg802020.zip if needed
   2. Extract ${ARCHIVE_MEMBER}
   3. Write downloads/msx/msx1-basic-bios.rom
 
 Options:
-  --archive PATH       Use an existing Neo Kobe emulator pack archive.
+  --archive PATH       Use an existing vg802020.zip archive.
   --download-url URL   Override the archive download URL.
   --force-download     Re-download the archive even if it already exists.
 EOF
@@ -137,7 +137,7 @@ cleanup() {
 trap cleanup EXIT
 
 7z e -y "-o${tmpdir}" "${archive_path}" "${ARCHIVE_MEMBER}" >/dev/null
-matched_rom="${tmpdir}/vg8020-20_basic-bios1.rom"
+matched_rom="${tmpdir}/${ARCHIVE_MEMBER}"
 [[ -f "${matched_rom}" ]] || die "failed to extract ${ARCHIVE_MEMBER}"
 [[ "$(sha256sum "${matched_rom}" | awk '{print $1}')" == "${TARGET_ROM_SHA256}" ]] || \
   die "unexpected ROM hash for ${ARCHIVE_MEMBER}"

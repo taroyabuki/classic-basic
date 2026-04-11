@@ -21,9 +21,9 @@ What it does:
 
 Notes:
   - The default DOS command is GWBASIC
-  - In this wrapper, typing SYSTEM exits back out of dosemu2
+  - Interactive mode is a text shell; Ctrl-D or SYSTEM exits it
   - PROGRAM.bas is assumed to be ASCII and may use LF, CRLF, or CR line endings
-  - With --file PROGRAM.bas, this wrapper loads it into GW-BASIC and stays interactive
+  - With --file PROGRAM.bas, this wrapper loads line-numbered source into the text shell so you can type RUN
   - With --run --file PROGRAM.bas, this wrapper runs it and exits after collecting the output
   - In --run mode, INPUT, LINE INPUT, INPUT$, and INKEY$ are rejected before execution
   - Use --timeout only when you want to cap file-run wall time; default is unlimited
@@ -110,8 +110,8 @@ if [[ -n "${file_path}" ]]; then
       run_gwbasic_file "${runtime_dir}" "${home_dir}" "${staged_program}"
     fi
   else
-    run_gwbasic "${runtime_dir}" "${home_dir}" "gwbasic ${staged_program}"
+    run_gwbasic "${runtime_dir}" "${home_dir}" "gwbasic ${staged_program}" "${archive_path}"
   fi
   exit $?
 fi
-run_gwbasic "${runtime_dir}" "${home_dir}" "${dos_command}"
+run_gwbasic "${runtime_dir}" "${home_dir}" "${dos_command}" "${archive_path}"

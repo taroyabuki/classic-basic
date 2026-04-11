@@ -143,7 +143,7 @@ static void bridge_drive_startup_prompt_automation(void)
     char screen[2048];
     size_t screen_len;
 
-    if (!bridge_only_mode || quasi88_get_mode() != EXEC) {
+    if (!bridge_only_mode || !quasi88_is_exec()) {
         return;
     }
 
@@ -172,6 +172,9 @@ static void bridge_reset_injected_key_events(void)
 
 static int bridge_ascii_to_key88(unsigned char c)
 {
+    if (c == 0x08 || c == 0x7f) {
+        return KEY88_BS;
+    }
     if (c >= 32 && c <= 126) {
         return (int)c;
     }
@@ -183,7 +186,9 @@ static int bridge_ascii_to_key88_physical(unsigned char c, int *key_code_out, in
     int key_code = KEY88_INVALID;
     int needs_shift = 0;
 
-    if (c >= 'a' && c <= 'z') {
+    if (c == 0x08 || c == 0x7f) {
+        key_code = KEY88_BS;
+    } else if (c >= 'a' && c <= 'z') {
         key_code = c;
     } else if (c >= 'A' && c <= 'Z') {
         key_code = c - 'A' + 'a';
@@ -406,6 +411,7 @@ static int bridge_enqueue_sequence_immediate(const char *sequence)
             }
             len = (int)(end - p);
             if (!((len == 3 && strncmp(p + 1, "CR", 2) == 0) ||
+                  (len == 3 && strncmp(p + 1, "BS", 2) == 0) ||
                   (len == 4 && strncmp(p + 1, "RET", 3) == 0) ||
                   (len == 4 && strncmp(p + 1, "ENT", 3) == 0))) {
                 return -2;
@@ -440,9 +446,14 @@ static int bridge_enqueue_sequence_immediate(const char *sequence)
             const char *end = strchr(p, '>');
             int len = (int)(end - p);
             if ((len == 3 && strncmp(p + 1, "CR", 2) == 0) ||
+                (len == 3 && strncmp(p + 1, "BS", 2) == 0) ||
                 (len == 4 && strncmp(p + 1, "RET", 3) == 0) ||
                 (len == 4 && strncmp(p + 1, "ENT", 3) == 0)) {
-                key_code = KEY88_RETURN;
+                if (len == 3 && strncmp(p + 1, "BS", 2) == 0) {
+                    key_code = KEY88_BS;
+                } else {
+                    key_code = KEY88_RETURN;
+                }
             } else {
                 return -2;
             }
@@ -490,6 +501,18 @@ static size_t capture_text_screen(char *buf, size_t bufsize)
             line[j] = ch;
             if (ch != ' ') {
                 end = j;
+            }
+        }
+
+        /*
+         * Preserve trailing spaces on the active input line. textscr used by the
+         * host CLI should reflect cursor advance after typing "10 " even though
+         * the last visible character cell is blank.
+         */
+        if (i == crtc_cursor[1]) {
+            int cursor_tail = crtc_cursor[0] - 1;
+            if (cursor_tail > end) {
+                end = cursor_tail;
             }
         }
 
@@ -726,7 +749,7 @@ static int cmd_go(bridge_response_t *resp)
 {
     /* Allow GO from any active runtime mode; headless --run hosts do not use monitor stdin. */
     int mode = quasi88_get_mode();
-    if (mode == QUIT) {
+    if (mode == 0x30) {
         resp->error_code = RUN_ERR_NOT_IN_MONITOR;
         snprintf(resp->response, sizeof(resp->response),
                  "ERR RUN_ERR_NOT_IN_MONITOR mode=%d", mode);
@@ -829,7 +852,7 @@ static int cmd_wait(const char *args, bridge_response_t *resp)
          * INPUT_WAIT / COMPLETED / ERROR instead of pinning the bridge thread
          * in a RUNNING-only busy wait.
          */
-        if (quasi88_get_mode() == EXEC) {
+        if (quasi88_is_exec()) {
             bridge_drive_startup_prompt_automation();
             /*
              * Drive the normal QUASI88 frame loop while waiting. Calling
@@ -962,15 +985,11 @@ const char *bridge_get_state_name(int state)
 const char *bridge_get_mode_name(int mode)
 {
     switch (mode) {
-        case EXEC:           return "EXEC";
-        case GO:             return "GO";
-        case TRACE:          return "TRACE";
-        case STEP:           return "STEP";
-        case TRACE_CHANGE:   return "TRACE_CHANGE";
-        case MONITOR:        return "MONITOR";
-        case MENU:           return "MENU";
-        case PAUSE:          return "PAUSE";
-        case QUIT:           return "QUIT";
+        case 0x00:           return "EXEC";
+        case 0x10:           return "MONITOR";
+        case 0x20:           return "MENU";
+        case 0x21:           return "PAUSE";
+        case 0x30:           return "QUIT";
         default:             return "UNKNOWN";
     }
 }

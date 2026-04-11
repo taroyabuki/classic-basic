@@ -109,6 +109,7 @@ run_gwbasic() {
   local runtime_dir="$1"
   local home_dir="$2"
   local dos_command="$3"
+  local archive_path="$4"
 
   # When running interactively (stdin is a TTY), use -kt (keyboard from TTY)
   # and prefer a clean PTY via 'script'; fall back to 'expect' when nested PTY
@@ -117,6 +118,19 @@ run_gwbasic() {
   # with stdin redirected from /dev/null so dosemu exits cleanly after -E cmd
   # completes without hanging on /dev/tty.
   if [[ -t 0 ]]; then
+    if [[ "${dos_command}" == "gwbasic" || "${dos_command}" == gwbasic\ * ]]; then
+      local interactive_args=(
+        --archive "${archive_path}"
+        --runtime "${runtime_dir}"
+        --home "${home_dir}"
+      )
+      if [[ "${dos_command}" == gwbasic\ * ]]; then
+        local staged_program="${dos_command#gwbasic }"
+        interactive_args+=(--file "${runtime_dir}/drive_c/${staged_program}")
+      fi
+      exec python3 "${ROOT_DIR}/src/gwbasic_interactive.py" "${interactive_args[@]}"
+    fi
+
     local dosemu_args=(
       --Flocal_dir "${runtime_dir}"
       --Fdrive_c "${runtime_dir}/drive_c"

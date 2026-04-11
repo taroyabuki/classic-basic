@@ -8,9 +8,9 @@ USAGE_NAME="${CLASSIC_BASIC_USAGE_NAME:-$0}"
 usage() {
   cat <<USAGE
 Usage:
-  $USAGE_NAME [--rom PATH] [--max-steps N]
-  $USAGE_NAME [--rom PATH] [--max-steps N] --file PROGRAM.bas
-  $USAGE_NAME [--rom PATH] [--max-steps N] --run --file PROGRAM.bas [--timeout SECONDS]
+  $USAGE_NAME [--rom PATH] [--max-steps N] [--boot-step-budget N] [--prompt-step-budget N]
+  $USAGE_NAME [--rom PATH] [--max-steps N] [--boot-step-budget N] [--prompt-step-budget N] --file PROGRAM.bas
+  $USAGE_NAME [--rom PATH] [--max-steps N] [--boot-step-budget N] [--prompt-step-budget N] --run --file PROGRAM.bas [--timeout SECONDS]
 
 What it does:
   - Runs Grant Searle's Z80 SBC ROM BASIC in a terminal.

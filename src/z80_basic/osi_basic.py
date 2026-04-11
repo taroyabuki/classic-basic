@@ -46,20 +46,33 @@ class SessionConsole:
     def __init__(self, staged_input: bytes = b"", terminal: RawTerminal | None = None) -> None:
         self._buffer = deque(staged_input)
         self._terminal = terminal
+        self._rubout_pending = False
 
     def read_byte(self) -> int:
         if self._buffer:
-            return self._normalize_input(self._buffer.popleft())
-
-        if self._terminal is None:
+            raw = self._buffer.popleft()
+        elif self._terminal is None:
             return 0x04
+        else:
+            raw = self._terminal.read_byte()
 
-        return self._normalize_input(self._terminal.read_byte())
+        is_backspace = (raw & 0x7F) in (0x08, 0x7F)
+        value = self._normalize_input(raw)
+        if is_backspace and self._terminal is not None:
+            self._rubout_pending = True
+        return value
 
     def write_byte(self, value: int) -> None:
         byte_value = value & 0x7F
 
         if self._terminal is not None:
+            if byte_value == 0x5F and self._rubout_pending:
+                self._rubout_pending = False
+                self._terminal.write_byte(0x08)
+                self._terminal.write_byte(0x20)
+                self._terminal.write_byte(0x08)
+                return
+            self._rubout_pending = False
             self._terminal.write_byte(byte_value)
             return
 
@@ -68,6 +81,8 @@ class SessionConsole:
     @staticmethod
     def _normalize_input(value: int) -> int:
         value &= 0x7F
+        if 0x61 <= value <= 0x7A:
+            return value - 0x20
         if value == 0x0A:
             return 0x0D
         if value in (0x08, 0x7F):

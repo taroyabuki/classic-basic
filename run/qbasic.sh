@@ -21,10 +21,10 @@ What it does:
 
 Notes:
   - The default DOS command is QBASIC
-  - Interactive mode exits on Ctrl-D; the wrapper closes QBasic for you
+  - Interactive mode is a text shell; Ctrl-D or SYSTEM exits it
   - PROGRAM.bas is assumed to be ASCII and may use LF, CRLF, or CR line endings
-  - With --file PROGRAM.bas, this wrapper loads it into the QBasic IDE and stays interactive so you can type RUN
-  - With --run --file PROGRAM.bas, this wrapper runs it with `/RUN`, redirects output to a DOS file, and exits after collecting it
+  - With --file PROGRAM.bas, this wrapper loads line-numbered source into the text shell so you can type RUN
+  - With --run --file PROGRAM.bas, this wrapper runs it with '/RUN', redirects output to a DOS file, and exits after collecting it
   - In --run mode, INPUT, LINE INPUT, INPUT$, and INKEY$ are rejected before execution
   - Use --timeout only when you want to cap file-run wall time; default is unlimited
 EOF
@@ -110,8 +110,8 @@ if [[ -n "${file_path}" ]]; then
       run_qbasic_file "${runtime_dir}" "${home_dir}" "${staged_program}"
     fi
   else
-    run_qbasic "${runtime_dir}" "${home_dir}" "qbasic ${staged_program}"
+    run_qbasic "${runtime_dir}" "${home_dir}" "qbasic ${staged_program}" "${archive_path}"
   fi
   exit $?
 fi
-run_qbasic "${runtime_dir}" "${home_dir}" "${dos_command}"
+run_qbasic "${runtime_dir}" "${home_dir}" "${dos_command}" "${archive_path}"

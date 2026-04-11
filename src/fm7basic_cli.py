@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import select
+import signal
 import shutil
 import subprocess
 import sys
@@ -43,13 +44,53 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _terminate_process(proc: subprocess.Popen[bytes]) -> int:
     if proc.poll() is None:
-        proc.terminate()
+        terminated = False
+        pid = getattr(proc, "pid", None)
+        if isinstance(pid, int):
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+                terminated = True
+            except OSError:
+                terminated = False
+        if not terminated:
+            proc.terminate()
         try:
             return proc.wait(timeout=5.0)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            killed = False
+            if isinstance(pid, int):
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    killed = True
+                except OSError:
+                    killed = False
+            if not killed:
+                proc.kill()
             return proc.wait(timeout=5.0)
     return proc.returncode or 0
+
+
+def _request_interactive_exit(temp_dir: Path | None) -> Path | None:
+    if temp_dir is None:
+        return None
+    exit_path = temp_dir / "exit.txt"
+    exit_path.write_text("", encoding="ascii")
+    return exit_path
+
+
+def _shutdown_interactive_process(
+    proc: subprocess.Popen[bytes],
+    *,
+    temp_dir: Path | None,
+    graceful_timeout: float = 1.0,
+) -> int:
+    _request_interactive_exit(temp_dir)
+    if proc.poll() is None:
+        try:
+            return proc.wait(timeout=graceful_timeout)
+        except subprocess.TimeoutExpired:
+            pass
+    return _terminate_process(proc)
 
 
 class _StartupOutputFilter:
@@ -77,12 +118,17 @@ class _ConsoleEchoFilter:
     def __init__(self, *, suppress_terminal_echo: bool) -> None:
         self._suppress_terminal_echo = suppress_terminal_echo
         self._pending_inputs: deque[str] = deque()
+        self._active_input: str | None = None
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        return text.strip().upper()
 
     def record_input(self, line: bytes) -> None:
         normalized = line.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
         for raw_line in normalized.split("\n"):
-            text = raw_line.strip()
+            text = self._normalize_text(raw_line)
             if not text:
                 continue
             with self._lock:
@@ -95,13 +141,18 @@ class _ConsoleEchoFilter:
         filtered: list[str] = []
         with self._lock:
             for line in lines:
-                text = line.strip()
-                if self._pending_inputs and text:
-                    pending = self._pending_inputs[0]
-                    if text == pending:
-                        self._pending_inputs.popleft()
+                text = self._normalize_text(line)
+                if text and self._active_input is not None:
+                    pending = self._active_input
+                    if text == pending or pending.startswith(text):
                         continue
-                    if pending.startswith(text):
+                    if self._pending_inputs and self._pending_inputs[0] == pending:
+                        self._pending_inputs.popleft()
+                    self._active_input = None
+                if text and self._pending_inputs:
+                    pending = self._pending_inputs[0]
+                    if text == pending or pending.startswith(text):
+                        self._active_input = pending
                         continue
                 filtered.append(line)
         return filtered
@@ -252,8 +303,7 @@ def _copy_console_snapshot(
             for line in diff_lines:
                 sys.stdout.write(f"{line}\n")
                 sys.stdout.flush()
-            if _snapshot_looks_stable(current_lines):
-                previous_lines = current_lines
+            previous_lines = current_lines
             time.sleep(0.2)
         current_lines = fbasic_batch._read_text_capture_lines(output_path)
         diff_lines = fbasic_batch._emit_console_diff(previous_lines, current_lines)
@@ -300,7 +350,7 @@ def run_interactive_session(
             _forward_stdin_to_input_queue(input_path)
         except KeyboardInterrupt:
             pass
-        _terminate_process(proc)
+        _shutdown_interactive_process(proc, temp_dir=temp_dir)
         _join_io_threads(proc)
         return 0
     finally:
@@ -360,8 +410,8 @@ def run_headless_interactive_session(
             _forward_stdin_to_input_queue(input_path, console_echo_filter)
         except KeyboardInterrupt:
             pass
-        _terminate_process(proc)
         stop_event.set()
+        _shutdown_interactive_process(proc, temp_dir=temp_dir)
         _join_io_threads(proc)
         return 0
     finally:

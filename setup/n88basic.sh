@@ -46,7 +46,7 @@ If PATH is omitted, the script:
   1. Uses an existing downloads/n88basic/roms if all required ROMs are present
   2. Downloads the Neo Kobe emulator pack from archive.org if needed
   3. Extracts PC-8801 N88/N80 ROMs into downloads/n88basic/roms
-  4. Verifies vendor/quasi88/quasi88.sdl2 exists, or builds it with make
+  4. Verifies vendor/quasi88/quasi88.sdl2 exists, or builds the bundled QUASI88 0.7.3 tree with make
 EOF
 }
 

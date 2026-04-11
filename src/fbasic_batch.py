@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -28,6 +29,9 @@ _OCR_WHITELIST = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;+-*/()[]"!?@=_ '
 _KEEP_TEMP = os.environ.get("CLASSIC_BASIC_KEEP_TEMP", "") not in {"", "0", "false", "False"}
 _FORCE_HEADFUL = os.environ.get("CLASSIC_BASIC_FM_BATCH_HEADLESS", "") in {"0", "false", "False"}
 _BATCH_MARKER = "CBATCHBEGIN"
+_FM7_BATCH_POLL_INTERVAL = 0.1
+_FM7_DEFAULT_LOAD_SETTLE_SECONDS = 0.35
+_FM7_DEFAULT_RUN_SETTLE_SECONDS = 0.25
 _FM7_CONSOLE_BASE = 0xC000
 _FM7_CONSOLE_COLUMNS = 40
 _FM7_CONSOLE_ROWS = 25
@@ -76,9 +80,11 @@ def parse_timeout_spec(spec: str | None) -> float | None:
     return value * factor
 
 
-def post_run_settle_frames() -> int:
+def post_run_settle_frames(driver: str) -> int:
     raw_value = os.environ.get("CLASSIC_BASIC_FM_BATCH_SETTLE_FRAMES", "")
     if not raw_value.strip():
+        if driver in {"fm7", "fm77av"}:
+            return 600
         return _DEFAULT_POST_RUN_SETTLE_FRAMES
     value = int(raw_value)
     if value < 0:
@@ -94,7 +100,7 @@ def pre_run_settle_frames(driver: str) -> int:
             raise ValueError("CLASSIC_BASIC_FM_BATCH_PRE_RUN_SETTLE_FRAMES must be non-negative")
         return value
     if driver in {"fm7", "fm77av"}:
-        return 720
+        return 180
     return _PRE_RUN_SETTLE_FRAMES
 
 
@@ -106,7 +112,7 @@ def input_gap_frames(driver: str) -> int:
             raise ValueError("CLASSIC_BASIC_FM_BATCH_INPUT_GAP_FRAMES must be positive")
         return value
     if driver in {"fm7", "fm77av"}:
-        return 180
+        return 60
     return _INPUT_GAP_FRAMES
 
 
@@ -389,6 +395,189 @@ def _lua_quote(text: str) -> str:
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _fm7_snapshot_contains_trigger(snapshot: list[str]) -> bool:
+    for line in snapshot:
+        normalized = _normalize_ocr_text(line)
+        if normalized == "RUN" or _BATCH_MARKER in normalized:
+            return True
+    return False
+
+
+def _fm7_snapshot_contains_run(snapshot: list[str]) -> bool:
+    return any(_normalize_ocr_text(line) == "RUN" for line in snapshot)
+
+
+def _fm7_snapshot_has_ready_after_run(snapshot: list[str]) -> bool:
+    saw_run = False
+    for line in snapshot:
+        normalized = _normalize_ocr_text(line)
+        if normalized == "RUN":
+            saw_run = True
+        elif saw_run and normalized == "READY":
+            return True
+    return False
+
+
+class _FM7BatchProgress:
+    def __init__(self) -> None:
+        self.saw_trigger = False
+        self.saw_run = False
+        self.saw_ready_after_run = False
+
+    def observe(self, snapshot: list[str]) -> bool:
+        if _fm7_snapshot_contains_trigger(snapshot):
+            self.saw_trigger = True
+        if _fm7_snapshot_contains_run(snapshot):
+            self.saw_run = True
+        if _fm7_snapshot_has_ready_after_run(snapshot):
+            self.saw_ready_after_run = True
+        return bool(snapshot) and self.saw_trigger and self.saw_run and self.saw_ready_after_run
+
+
+def _fm7_default_settle_seconds(driver: str, *, phase: str) -> float:
+    if driver not in {"fm7", "fm77av"}:
+        return 0.0
+
+    if phase == "load":
+        raw_value = os.environ.get("CLASSIC_BASIC_FM_BATCH_PRE_RUN_SETTLE_FRAMES", "")
+        if raw_value.strip():
+            value = int(raw_value)
+            if value < 0:
+                raise ValueError("CLASSIC_BASIC_FM_BATCH_PRE_RUN_SETTLE_FRAMES must be non-negative")
+            return value / 60.0
+        return _FM7_DEFAULT_LOAD_SETTLE_SECONDS
+
+    raw_value = os.environ.get("CLASSIC_BASIC_FM_BATCH_SETTLE_FRAMES", "")
+    if raw_value.strip():
+        value = int(raw_value)
+        if value < 0:
+            raise ValueError("CLASSIC_BASIC_FM_BATCH_SETTLE_FRAMES must be non-negative")
+        return value / 60.0
+    return _FM7_DEFAULT_RUN_SETTLE_SECONDS
+
+
+def _sleep_until_poll(
+    *,
+    deadline: float | None,
+    poll_interval: float,
+    command: list[str],
+    timeout_seconds: float | None,
+) -> None:
+    if deadline is None:
+        time.sleep(poll_interval)
+        return
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired(command, timeout_seconds if timeout_seconds is not None else 0.0)
+    time.sleep(min(poll_interval, remaining))
+
+
+def _append_lines_to_input_queue(input_path: Path, lines: list[str]) -> None:
+    with input_path.open("a", encoding="ascii") as queue_handle:
+        for line in lines:
+            queue_handle.write(f"{line}\n")
+        queue_handle.flush()
+
+
+def _terminate_launched_process(proc: subprocess.Popen[bytes]) -> None:
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5.0)
+
+
+def _wait_for_fm7_snapshot(
+    *,
+    proc: subprocess.Popen[bytes],
+    output_path: Path,
+    settle_seconds: float,
+    predicate: Callable[[list[str]], bool],
+    command: list[str],
+    timeout_seconds: float | None,
+    deadline: float | None,
+    exit_error: str,
+) -> list[str]:
+    previous_snapshot: list[str] | None = None
+    stable_since: float | None = None
+
+    while True:
+        snapshot = _read_text_capture_lines(output_path)
+        if predicate(snapshot):
+            if snapshot != previous_snapshot:
+                previous_snapshot = list(snapshot)
+                stable_since = time.monotonic()
+            elif stable_since is None:
+                stable_since = time.monotonic()
+
+            if stable_since is not None and time.monotonic() - stable_since >= settle_seconds:
+                return snapshot
+        else:
+            previous_snapshot = list(snapshot) if snapshot else None
+            stable_since = None
+
+        if proc.poll() is not None:
+            if predicate(snapshot):
+                return snapshot
+            raise RuntimeError(exit_error)
+
+        _sleep_until_poll(
+            deadline=deadline,
+            poll_interval=_FM7_BATCH_POLL_INTERVAL,
+            command=command,
+            timeout_seconds=timeout_seconds,
+        )
+
+
+def _run_fm7_batch_capture(
+    *,
+    mame_command: str,
+    rompath: Path,
+    driver: str,
+    disk_path: Path | None,
+    extra_mame_args: list[str],
+    program_lines: list[str],
+    temp_dir: Path,
+    timeout_seconds: float | None,
+) -> list[str]:
+    command = [mame_command, driver]
+    deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
+    progress = _FM7BatchProgress()
+    input_path = temp_dir / "input.txt"
+    output_path = temp_dir / "screen.txt"
+    lua_path = temp_dir / "interactive.lua"
+    queued_lines = [*program_lines, f'PRINT "{_BATCH_MARKER}"', "RUN"]
+    input_path.write_text("".join(f"{line}\n" for line in queued_lines), encoding="ascii")
+    output_path.write_text("", encoding="ascii")
+    _build_fm7_interactive_lua(lua_path, input_path=input_path, output_path=output_path)
+
+    proc = launch_mame(
+        mame_command=mame_command,
+        rompath=rompath,
+        driver=driver,
+        disk_path=disk_path,
+        lua_path=lua_path,
+        extra_mame_args=extra_mame_args,
+        headless=True,
+    )
+    try:
+        return _wait_for_fm7_snapshot(
+            proc=proc,
+            output_path=output_path,
+            settle_seconds=_fm7_default_settle_seconds(driver, phase="run"),
+            predicate=progress.observe,
+            command=command,
+            timeout_seconds=timeout_seconds,
+            deadline=deadline,
+            exit_error="unable to detect FM7 batch execution in console RAM",
+        )
+    finally:
+        _terminate_launched_process(proc)
+
+
 def _build_capture_lua(
     lua_path: Path,
     *,
@@ -413,7 +602,7 @@ def _build_capture_lua(
     input_gap_seconds = max(1, input_gap_frames(driver) // 60)
     marker_delay_seconds = max(3, pre_run_settle_frames(driver) // 60)
     run_delay_seconds = max(3, run_delay_frames(driver) // 60)
-    capture_delay_seconds = max(12, post_run_settle_frames() // 60)
+    capture_delay_seconds = max(3, post_run_settle_frames(driver) // 60)
     marker_second = input_start_seconds + input_gap_seconds * program_line_count + marker_delay_seconds
     run_second = marker_second + run_delay_seconds
     capture_second = run_second + capture_delay_seconds
@@ -504,13 +693,24 @@ def _build_fm7_interactive_lua(
     *,
     input_path: Path,
     output_path: Path | None = None,
+    exit_path: Path | None = None,
 ) -> None:
     quoted_input_path = _lua_quote(str(input_path))
+    warning_clear_frame = _INPUT_START_FRAME
+    exit_path_line = "local exit_path = nil"
+    output_path_line = "local output_path = nil"
     output_path_block = ""
     capture_block = ""
+    if exit_path is not None:
+        quoted_exit_path = _lua_quote(str(exit_path))
+        exit_path_line = f"local exit_path = {quoted_exit_path}"
     if output_path is not None:
         quoted_output_path = _lua_quote(str(output_path))
-        output_path_block = f"local output_path = {quoted_output_path}\nlocal sub_program = manager.machine.devices[\":sub\"].spaces[\"program\"]\nlocal previous_snapshot = nil\n"
+        output_path_line = f"local output_path = {quoted_output_path}"
+        output_path_block = (
+            "local sub_program = manager.machine.devices[\":sub\"].spaces[\"program\"]\n"
+            "local previous_snapshot = nil\n"
+        )
         capture_block = f"""
 local function trim_trailing_spaces(text)
   return (string.gsub(text, "%s+$", ""))
@@ -555,12 +755,14 @@ end
 """
     text = f"""\
 local input_path = {quoted_input_path}
+{exit_path_line}
+{output_path_line}
 local keyboard = manager.machine.natkeyboard
-local started_at = os.time()
+local frame = 0
 local input_offset = 0
 local pending_line = nil
 local pending_enter_count = 0
-local last_warning_second = -1
+local last_warning_frame = -1
 {output_path_block}
 
 local function queue_next_line()
@@ -582,14 +784,22 @@ end
 {capture_block}
 
 emu.register_frame_done(function()
-  local elapsed = os.time() - started_at
+  frame = frame + 1
   if output_path ~= nil then
     write_snapshot(read_console_lines())
   end
-  if elapsed < 6 then
-    if elapsed ~= last_warning_second then
+  if exit_path ~= nil then
+    local exit_handle = io.open(exit_path, "r")
+    if exit_handle ~= nil then
+      exit_handle:close()
+      manager.machine:exit()
+      return
+    end
+  end
+  if frame < {warning_clear_frame} then
+    if (frame % 30) == 0 and frame ~= last_warning_frame then
       keyboard:post(" ")
-      last_warning_second = elapsed
+      last_warning_frame = frame
     end
     return
   end
@@ -693,12 +903,10 @@ def _build_fm7_console_capture_lua(
     program_line_count: int,
     console_output_path: Path,
 ) -> None:
-    input_start_seconds = max(6, _INPUT_START_FRAME // 60)
-    input_gap_seconds = max(1, input_gap_frames(driver) // 60)
-    marker_delay_seconds = max(3, pre_run_settle_frames(driver) // 60)
-    run_delay_seconds = max(3, run_delay_frames(driver) // 60)
-    marker_second = input_start_seconds + input_gap_seconds * program_line_count + marker_delay_seconds
-    run_second = marker_second + run_delay_seconds
+    input_start_frame = _INPUT_START_FRAME
+    input_gap = input_gap_frames(driver)
+    marker_frame = input_start_frame + input_gap * program_line_count + pre_run_settle_frames(driver)
+    run_frame = marker_frame + run_delay_frames(driver)
     text = f"""\
 local program_path = os.getenv("FBASIC_PROGRAM_PATH")
 local output_path = "{console_output_path}"
@@ -708,17 +916,14 @@ local lines = {{}}
 for line in io.lines(program_path) do
   table.insert(lines, line)
 end
-local started_at = os.time()
+local frame = 0
 local next_index = 1
-local next_input_second = {input_start_seconds}
+local next_input_frame = {input_start_frame}
 local posted_marker = false
 local posted_run = false
 local pending_enter_count = 0
 local pending_text = nil
-local last_warning_second = -1
-local last_input_second = -1
-local last_marker_second = -1
-local last_run_second = -1
+local last_warning_frame = -1
 local saw_trigger = false
 local saw_run = false
 local previous_snapshot = nil
@@ -797,7 +1002,7 @@ local function write_lines(snapshot)
 end
 
 emu.register_frame_done(function()
-  local elapsed = os.time() - started_at
+  frame = frame + 1
   if pending_text ~= nil then
     keyboard:post(pending_text)
     pending_text = nil
@@ -809,33 +1014,30 @@ emu.register_frame_done(function()
     pending_enter_count = pending_enter_count - 1
     return
   end
-  if elapsed < 6 then
-    if elapsed ~= last_warning_second then
+  if frame < {input_start_frame} then
+    if (frame % 30) == 0 and frame ~= last_warning_frame then
       keyboard:post(" ")
-      last_warning_second = elapsed
+      last_warning_frame = frame
     end
     return
   end
-  if next_index <= #lines and elapsed >= next_input_second and elapsed ~= last_input_second then
+  if next_index <= #lines and frame >= next_input_frame then
     pending_text = lines[next_index]
     next_index = next_index + 1
-    next_input_second = elapsed + {input_gap_seconds}
-    last_input_second = elapsed
+    next_input_frame = frame + {input_gap}
     return
   end
-  if elapsed >= {marker_second} and not posted_marker and elapsed ~= last_marker_second then
+  if frame >= {marker_frame} and not posted_marker then
     pending_text = 'PRINT "{_BATCH_MARKER}"'
     posted_marker = true
-    last_marker_second = elapsed
     return
   end
-  if elapsed >= {run_second} and not posted_run and elapsed ~= last_run_second then
+  if frame >= {run_frame} and not posted_run then
     pending_text = "RUN"
     posted_run = true
-    last_run_second = elapsed
     return
   end
-  if posted_run and elapsed >= {run_second} then
+  if posted_run and frame >= {run_frame} then
     local snapshot = read_console_lines()
     if contains_trigger(snapshot) then
       saw_trigger = true
@@ -879,6 +1081,9 @@ def _read_text_capture_lines(path: Path) -> list[str]:
 
 
 def _emit_console_diff(previous_lines: list[str], current_lines: list[str]) -> list[str]:
+    def normalize_line(text: str) -> str:
+        return text.strip().upper()
+
     prefix_length = 0
     max_prefix = min(len(previous_lines), len(current_lines))
     while prefix_length < max_prefix and previous_lines[prefix_length] == current_lines[prefix_length]:
@@ -887,13 +1092,34 @@ def _emit_console_diff(previous_lines: list[str], current_lines: list[str]) -> l
         return []
     if prefix_length == len(previous_lines):
         return current_lines[prefix_length:]
+    if prefix_length == len(previous_lines) - 1 and len(previous_lines) == len(current_lines):
+        return current_lines[prefix_length:]
 
     previous_count = len(previous_lines)
     current_count = len(current_lines)
+    normalized_previous = [normalize_line(line) for line in previous_lines]
+    normalized_current = [normalize_line(line) for line in current_lines]
     if previous_count > 1:
         for start in range(current_count - previous_count + 1):
             if current_lines[start : start + previous_count] == previous_lines:
                 return current_lines[start + previous_count :]
+        best_match_length = 0
+        best_match_end = 0
+        for previous_start in range(previous_count):
+            for current_start in range(current_count):
+                match_length = 0
+                while (
+                    previous_start + match_length < previous_count
+                    and current_start + match_length < current_count
+                    and normalized_previous[previous_start + match_length]
+                    == normalized_current[current_start + match_length]
+                ):
+                    match_length += 1
+                if match_length > best_match_length:
+                    best_match_length = match_length
+                    best_match_end = current_start + match_length
+        if best_match_length > 1:
+            return current_lines[best_match_end:]
 
     overlap = min(previous_count, current_count)
     while overlap > 0:
@@ -983,7 +1209,7 @@ def launch_mame(
         command.extend(["-autoboot_script", str(lua_path)])
     if not effective_headless and not env.get("DISPLAY") and shutil.which("xvfb-run") is not None:
         command = ["xvfb-run", "-a", *command]
-    return subprocess.Popen(command, env=env, stdout=stdout, stderr=stderr)
+    return subprocess.Popen(command, env=env, stdout=stdout, stderr=stderr, start_new_session=True)
 
 
 def _pick_xvfb_display() -> str:
@@ -1155,50 +1381,42 @@ def run_batch(
         image_path = temp_dir / "screen.png"
         text_output_path = temp_dir / "screen.txt"
         lua_path = temp_dir / "capture.lua"
-        normalized_program_path.write_text("\n".join(program_lines) + "\n", encoding="ascii")
-        gap_frames = input_gap_frames(driver)
-        marker_frame = (
-            _INPUT_START_FRAME
-            + gap_frames * len(program_lines)
-            + pre_run_settle_frames(driver)
-        )
-        run_frame = marker_frame + run_delay_frames(driver)
-        capture_frame = run_frame + post_run_settle_frames()
-        _build_capture_lua(
-            lua_path,
-            driver=driver,
-            program_line_count=len(program_lines),
-            pixel_output_path=pixel_path,
-            send_marker=True,
-            send_run=True,
-            capture_frame=capture_frame,
-            run_frame=run_frame,
-            marker_frame=marker_frame,
-        )
         output_lines: list[str] = []
         if driver in {"fm7", "fm77av"}:
-            _build_fm7_console_capture_lua(
-                lua_path,
-                driver=driver,
-                program_line_count=len(program_lines),
-                console_output_path=text_output_path,
-            )
-            _run_mame(
+            captured_lines = _run_fm7_batch_capture(
                 mame_command=mame_command,
                 rompath=rompath,
                 driver=driver,
                 disk_path=disk_path,
-                program_path=normalized_program_path,
-                lua_path=lua_path,
                 extra_mame_args=extra_mame_args,
+                program_lines=program_lines,
+                temp_dir=temp_dir,
                 timeout_seconds=timeout_seconds,
-                headless=True,
             )
-            captured_lines = _read_text_capture_lines(text_output_path)
             output_lines = extract_output_lines(captured_lines, captured_lines)
             if not captured_lines:
                 raise RuntimeError("unable to detect FM7 batch execution in console RAM")
         elif driver in {"pc8801mk2"}:
+            normalized_program_path.write_text("\n".join(program_lines) + "\n", encoding="ascii")
+            gap_frames = input_gap_frames(driver)
+            marker_frame = (
+                _INPUT_START_FRAME
+                + gap_frames * len(program_lines)
+                + pre_run_settle_frames(driver)
+            )
+            run_frame = marker_frame + run_delay_frames(driver)
+            capture_frame = run_frame + post_run_settle_frames(driver)
+            _build_capture_lua(
+                lua_path,
+                driver=driver,
+                program_line_count=len(program_lines),
+                pixel_output_path=pixel_path,
+                send_marker=True,
+                send_run=True,
+                capture_frame=capture_frame,
+                run_frame=run_frame,
+                marker_frame=marker_frame,
+            )
             _require_ocr_tools()
             _build_capture_lua(
                 lua_path,
@@ -1223,6 +1441,26 @@ def run_batch(
                 timeout_seconds=timeout_seconds,
             )
         else:
+            normalized_program_path.write_text("\n".join(program_lines) + "\n", encoding="ascii")
+            gap_frames = input_gap_frames(driver)
+            marker_frame = (
+                _INPUT_START_FRAME
+                + gap_frames * len(program_lines)
+                + pre_run_settle_frames(driver)
+            )
+            run_frame = marker_frame + run_delay_frames(driver)
+            capture_frame = run_frame + post_run_settle_frames(driver)
+            _build_capture_lua(
+                lua_path,
+                driver=driver,
+                program_line_count=len(program_lines),
+                pixel_output_path=pixel_path,
+                send_marker=True,
+                send_run=True,
+                capture_frame=capture_frame,
+                run_frame=run_frame,
+                marker_frame=marker_frame,
+            )
             _require_ocr_tools()
             _run_mame(
                 mame_command=mame_command,
@@ -1344,6 +1582,7 @@ def prepare_fm7_interactive_session(
 ) -> tuple[Path, Path, Path]:
     temp_dir = Path(tempfile.mkdtemp(prefix="fbasic-interactive-"))
     input_path = temp_dir / "input.txt"
+    exit_path = temp_dir / "exit.txt"
     lua_path = temp_dir / "interactive.lua"
     initial_lines: list[str] = []
     if program_path is not None:
@@ -1352,7 +1591,7 @@ def prepare_fm7_interactive_session(
         "".join(f"{line}\n" for line in initial_lines),
         encoding="ascii",
     )
-    _build_fm7_interactive_lua(lua_path, input_path=input_path)
+    _build_fm7_interactive_lua(lua_path, input_path=input_path, exit_path=exit_path)
     return temp_dir, lua_path, input_path
 
 
@@ -1363,6 +1602,7 @@ def prepare_fm7_headless_interactive_session(
 ) -> tuple[Path, Path, Path, Path]:
     temp_dir = Path(tempfile.mkdtemp(prefix="fbasic-interactive-"))
     input_path = temp_dir / "input.txt"
+    exit_path = temp_dir / "exit.txt"
     output_path = temp_dir / "screen.txt"
     lua_path = temp_dir / "interactive.lua"
     initial_lines: list[str] = []
@@ -1373,7 +1613,12 @@ def prepare_fm7_headless_interactive_session(
         encoding="ascii",
     )
     output_path.write_text("", encoding="ascii")
-    _build_fm7_interactive_lua(lua_path, input_path=input_path, output_path=output_path)
+    _build_fm7_interactive_lua(
+        lua_path,
+        input_path=input_path,
+        output_path=output_path,
+        exit_path=exit_path,
+    )
     return temp_dir, lua_path, input_path, output_path
 
 

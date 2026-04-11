@@ -112,14 +112,24 @@ run_qbasic() {
   local runtime_dir="$1"
   local home_dir="$2"
   local dos_command="$3"
+  local archive_path="$4"
 
-  # QBasic needs wrapper-managed EOF handling so Ctrl-D can close the IDE
-  # cleanly. Use a dedicated PTY bridge that forwards interactive input and
-  # translates EOF into the keyboard sequence needed to exit.
-  # When running non-interactively (subprocess/pipe), use -ks (keyboard from stdin)
-  # with stdin redirected from /dev/null so dosemu exits cleanly after -E cmd
-  # completes without hanging on /dev/tty.
   if [[ -t 0 ]]; then
+    if [[ "${dos_command}" == "qbasic" || "${dos_command}" == qbasic\ * ]]; then
+      local interactive_args=(
+        --archive "${archive_path}"
+        --runtime "${runtime_dir}"
+        --home "${home_dir}"
+      )
+      if [[ "${dos_command}" == qbasic\ * ]]; then
+        local staged_program="${dos_command#qbasic }"
+        interactive_args+=(--file "${runtime_dir}/drive_c/${staged_program}")
+      fi
+      exec python3 "${ROOT_DIR}/src/qbasic_interactive.py" "${interactive_args[@]}"
+    fi
+
+    # Custom DOS commands still use the legacy PTY bridge because the text shell
+    # only models the standard QBasic workflow.
     local dosemu_bin
     local preload
     dosemu_bin="$(dosemu_command)"
@@ -137,12 +147,12 @@ run_qbasic() {
       -E "${dos_command}"
     )
     if [[ -n "${preload}" ]]; then
-      exec env LD_PRELOAD="${preload}" python3 "${ROOT_DIR}/src/qbasic_interactive.py" \
+      exec env LD_PRELOAD="${preload}" python3 "${ROOT_DIR}/src/qbasic_tty_bridge.py" \
         --home "${home_dir}" \
         --log-file "${runtime_dir}/dosemu.log" \
         -- "${dosemu_args[@]}"
     fi
-    exec python3 "${ROOT_DIR}/src/qbasic_interactive.py" \
+    exec python3 "${ROOT_DIR}/src/qbasic_tty_bridge.py" \
       --home "${home_dir}" \
       --log-file "${runtime_dir}/dosemu.log" \
       -- "${dosemu_args[@]}"

@@ -28,6 +28,7 @@ die() {
 file_path=""
 run_program=0
 args=()
+explicit_rom=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -49,6 +50,9 @@ while [[ $# -gt 0 ]]; do
       die "use --file PROGRAM.bas instead of $1"
       ;;
     --rom|--entry-point|--max-steps|--max-rounds|--trace|--breakpoint|--system-input-value|--show-state|--show-ports|--show-port-summary|--show-vram|--show-vram-summary|--port-log-limit|--summary-limit|--vram-start|--vram-stride|--vram-cell-width|--rows|--cols)
+      if [[ "$1" == "--rom" ]]; then
+        explicit_rom=1
+      fi
       args+=("$1")
       shift
       if [[ $# -gt 0 && "$1" != -* ]]; then
@@ -72,6 +76,11 @@ done
 
 if [[ "${run_program}" == "1" && -z "${file_path}" ]]; then
   die "--run requires --file PROGRAM.bas"
+fi
+
+default_rom="${ROOT_DIR}/downloads/pc8001/N80_11.rom"
+if [[ -n "${file_path}" && "${explicit_rom}" != "1" && ! -f "${default_rom}" ]]; then
+  die "N-BASIC ROM is not prepared: ${default_rom}. Run ./setup/nbasic.sh first."
 fi
 
 if [[ -n "${file_path}" ]]; then

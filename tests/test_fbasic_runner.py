@@ -57,6 +57,58 @@ class BasicRunnerTests(unittest.TestCase):
             logged = python_log.read_text(encoding="ascii")
             self.assertIn("-m fm11basic --run --file demo.bas", logged)
 
+    def test_run_fm11basic_forwards_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            _copy_file(ROOT_DIR / "run/fm11basic.sh", temp_path / "run/fm11basic.sh")
+            _copy_file(ROOT_DIR / "src/fm11basic.py", temp_path / "src/fm11basic.py")
+
+            bin_dir = temp_path / "bin"
+            python_log = temp_path / "python.log"
+            _write_executable(
+                bin_dir / "python3",
+                f"""#!/usr/bin/env bash
+                set -euo pipefail
+                printf '%s\\n' "$*" >"{python_log}"
+                """,
+            )
+
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            result = subprocess.run(
+                ["bash", "run/fm11basic.sh", "--run", "--file", "demo.bas", "--timeout", "17.5"],
+                cwd=temp_path,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            logged = python_log.read_text(encoding="ascii")
+            self.assertIn("-m fm11basic --run --file demo.bas --timeout 17.5", logged)
+
+    def test_run_qbasic_help_does_not_trigger_shell_command_substitution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            _copy_file(ROOT_DIR / "run/qbasic.sh", temp_path / "run/qbasic.sh")
+            _copy_file(ROOT_DIR / "scripts/qbasic-common.sh", temp_path / "scripts/qbasic-common.sh")
+            _copy_file(ROOT_DIR / "scripts/basic-file-common.sh", temp_path / "scripts/basic-file-common.sh")
+
+            result = subprocess.run(
+                ["bash", "run/qbasic.sh", "--help"],
+                cwd=temp_path,
+                env=os.environ.copy(),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Usage:", result.stdout)
+            self.assertIn("'/RUN'", result.stdout)
+            self.assertEqual(result.stderr, "")
+
     def test_run_fm7basic_without_file_invokes_interactive_helper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)

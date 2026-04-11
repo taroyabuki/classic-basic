@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -66,6 +67,34 @@ class GrantsBasicCliTests(unittest.TestCase):
 
         self.assertEqual(result, 2)
         self.assertIn("error: interactive input is unsupported", stderr.getvalue())
+
+    def test_step_budget_flags_flow_into_machine_config(self) -> None:
+        with patch("grants_basic.cli.GrantSearleMachine") as machine_cls:
+            machine = machine_cls.return_value
+            machine.run_terminal.return_value = 0
+
+            result = main(["--boot-step-budget", "123", "--prompt-step-budget", "456"])
+
+        self.assertEqual(result, 0)
+        config = machine_cls.call_args.args[0]
+        self.assertEqual(config.boot_step_budget, 123)
+        self.assertEqual(config.prompt_step_budget, 456)
+
+    def test_step_budget_env_flows_into_machine_config(self) -> None:
+        env = {
+            "GRANTS_BASIC_BOOT_STEP_BUDGET": "789",
+            "GRANTS_BASIC_PROMPT_STEP_BUDGET": "987",
+        }
+        with patch.dict(os.environ, env, clear=False), patch("grants_basic.cli.GrantSearleMachine") as machine_cls:
+            machine = machine_cls.return_value
+            machine.run_terminal.return_value = 0
+
+            result = main([])
+
+        self.assertEqual(result, 0)
+        config = machine_cls.call_args.args[0]
+        self.assertEqual(config.boot_step_budget, 789)
+        self.assertEqual(config.prompt_step_budget, 987)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ _EXIT_SEQUENCE: tuple[tuple[bytes, float], ...] = (
     (b"SYSTEM\r", 0.5),
     (b"EXIT\r", 0.2),
 )
+_EXIT_GRACE_SECONDS = 1.0
 
 
 def _copy_winsize(source_fd: int, target_fd: int) -> None:
@@ -32,6 +33,20 @@ def _send_exit_sequence(master_fd: int) -> None:
         os.write(master_fd, payload)
         if pause > 0:
             time.sleep(pause)
+
+
+def _terminate_subprocess(proc: subprocess.Popen[bytes]) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+        proc.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def _run_bridge(*, runtime_dir: Path, startup_command: bytes | None) -> int:
@@ -63,6 +78,8 @@ def _run_bridge(*, runtime_dir: Path, startup_command: bytes | None) -> int:
     os.close(slave_fd)
 
     exit_requested = False
+    forced_exit = False
+    exit_deadline: float | None = None
     startup_pending = startup_command
 
     try:
@@ -81,7 +98,8 @@ def _run_bridge(*, runtime_dir: Path, startup_command: bytes | None) -> int:
                 except OSError:
                     data = b""
                 if data:
-                    os.write(stdout_fd, data)
+                    if not exit_requested:
+                        os.write(stdout_fd, data)
                     if startup_pending is not None:
                         os.write(master_fd, startup_pending)
                         startup_pending = None
@@ -91,6 +109,7 @@ def _run_bridge(*, runtime_dir: Path, startup_command: bytes | None) -> int:
                 if not data:
                     exit_requested = True
                     _send_exit_sequence(master_fd)
+                    exit_deadline = time.monotonic() + _EXIT_GRACE_SECONDS
                     continue
                 eof_index = data.find(b"\x04")
                 if eof_index != -1:
@@ -98,8 +117,19 @@ def _run_bridge(*, runtime_dir: Path, startup_command: bytes | None) -> int:
                         os.write(master_fd, data[:eof_index])
                     exit_requested = True
                     _send_exit_sequence(master_fd)
+                    exit_deadline = time.monotonic() + _EXIT_GRACE_SECONDS
                     continue
                 os.write(master_fd, data)
+
+            if (
+                exit_requested
+                and exit_deadline is not None
+                and proc.poll() is None
+                and time.monotonic() >= exit_deadline
+            ):
+                forced_exit = True
+                _terminate_subprocess(proc)
+                break
 
         while True:
             try:
@@ -108,20 +138,18 @@ def _run_bridge(*, runtime_dir: Path, startup_command: bytes | None) -> int:
                 break
             if not data:
                 break
-            os.write(stdout_fd, data)
+            if not exit_requested:
+                os.write(stdout_fd, data)
     finally:
         if proc.poll() is None:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-                proc.wait(timeout=5)
-            except (OSError, subprocess.TimeoutExpired):
-                proc.kill()
-                proc.wait(timeout=5)
+            _terminate_subprocess(proc)
         os.close(master_fd)
         if stdin_is_tty:
             signal.signal(signal.SIGWINCH, previous_sigwinch)
             termios.tcsetattr(stdin_fd, termios.TCSADRAIN, original_attrs)
 
+    if exit_requested and (forced_exit or (proc.returncode is not None and proc.returncode != 0)):
+        return 0
     return proc.returncode
 
 

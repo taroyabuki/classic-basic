@@ -96,6 +96,10 @@ def _n88basic_runtime_available() -> bool:
     ).is_file()
 
 
+def _nbasic_runtime_available() -> bool:
+    return (ROOT_DIR / "downloads" / "pc8001" / "N80_11.rom").is_file()
+
+
 _DEMO_BATCH_EXCLUDED = {"fm7basic"}
 _DEMO_BATCH_TIMEOUT_OVERRIDES = {
     "6502": 60,
@@ -109,6 +113,7 @@ _DEMO_BATCH_AVAILABILITY_OVERRIDES = {
     "grantsbasic": _grantsbasic_runtime_available,
     "gwbasic": _dosemu_available,
     "msxbasic": lambda: shutil.which("openmsx") is not None,
+    "nbasic": _nbasic_runtime_available,
     "n88basic": _n88basic_runtime_available,
     "qbasic": _dosemu_available,
 }
@@ -264,6 +269,8 @@ class FidelityAuditTests(unittest.TestCase):
         self.assertIn("PI 3.14159", result.stdout)
 
     def test_nbasic_frac2_varptr_probe_returns_c6(self) -> None:
+        if not _nbasic_runtime_available():
+            self.skipTest("N-BASIC runtime is not available")
         result = _run(
             ["bash", "run/nbasic.sh", "--run", "--file", str(TEST_DATA_DIR / "nbasic_frac2_varptr_probe.bas")]
         )
@@ -274,6 +281,8 @@ class FidelityAuditTests(unittest.TestCase):
         )
 
     def test_nbasic_demo_batch(self) -> None:
+        if not _nbasic_runtime_available():
+            self.skipTest("N-BASIC runtime is not available")
         result = _run(["bash", "run/nbasic.sh", "--run", "--file", "demo/nbasic.bas"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("HELLO, WORLD", result.stdout)
@@ -281,10 +290,23 @@ class FidelityAuditTests(unittest.TestCase):
         self.assertIn("PI 3.141592979431152", result.stdout)
 
     def test_nbasic_pi_probe(self) -> None:
+        if not _nbasic_runtime_available():
+            self.skipTest("N-BASIC runtime is not available")
         result = _run(["bash", "run/nbasic.sh", "--run", "--file", str(TEST_DATA_DIR / "nbasic_pi_probe.bas")])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("194  104  33  162  218  15  73  130", result.stdout)
         self.assertIn("\n 0 \n", result.stdout)
+
+    def test_n88basic_long_decimal_literals_batch(self) -> None:
+        if not _n88basic_runtime_available():
+            self.skipTest("N88-BASIC runtime is not available")
+        result = _run(
+            ["bash", "run/n88basic.sh", "--run", "--file", str(TEST_DATA_DIR / "n88basic_long_decimal_probe.bas")],
+            timeout=90,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("3.14159265358979323#", result.stdout)
+        self.assertIn("3.14159265358979323846#", result.stdout)
 
     def test_msx_demo_batch(self) -> None:
         if shutil.which("openmsx") is None:
@@ -394,6 +416,8 @@ class FidelityAuditTests(unittest.TestCase):
 
         if not _pty_available():
             self.skipTest("no PTY devices available for N-BASIC interactive test")
+        if not _nbasic_runtime_available():
+            self.skipTest("N-BASIC runtime is not available")
 
         master_fd, slave_fd = pty.openpty()
         proc = subprocess.Popen(
@@ -440,19 +464,22 @@ class FidelityAuditTests(unittest.TestCase):
     def test_qbasic_exec_smoke(self) -> None:
         if not _dosemu_available():
             self.skipTest("dosemu not installed")
-        # Confirm the QBasic IDE starts, reaches the Immediate window, and that
-        # Ctrl-D causes the wrapper to close QBasic cleanly.
+        # Confirm the text shell accepts a direct command, runs it through the
+        # real QBasic batch backend, and exits cleanly on Ctrl-D.
         script = "\n".join([
             "spawn bash run/qbasic.sh",
             "set timeout 60",
             "expect {",
-            '    "Immediate" {}',
+            '    "QBasic> " {}',
             "    timeout     { exit 1 }",
             "}",
-            "sleep 0.5",
-            r'send "\004"',
+            'send "PRINT 2+2\\r"',
             "expect {",
-            "    eof     { exit 0 }",
+            '    "4" {',
+            r'        send "\004"',
+            "        expect eof",
+            "        exit 0",
+            "    }",
             "    timeout { exit 1 }",
             "}",
         ])

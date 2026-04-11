@@ -260,6 +260,101 @@ class N88BasicRunnerTests(unittest.TestCase):
         env = mock_popen.call_args.kwargs["env"]
         self.assertEqual(env["N88BASIC_BRIDGE_ONLY"], "1")
 
+    def test_queue_program_lines_preserves_unsuffixed_decimal_literals(self) -> None:
+        from n88basic_cli import N88BasicCLI
+        from run_control_bridge import RUN_ERR_OK
+
+        class _Session:
+            def __init__(self) -> None:
+                self.queued: list[str] = []
+
+            def queue(self, sequence: str) -> tuple[bool, dict[str, int]]:
+                self.queued.append(sequence)
+                return True, {"code": RUN_ERR_OK}
+
+        cli = N88BasicCLI()
+        session = _Session()
+        cli._capture_interactive_screen_lines = lambda _session: ["Ok"]  # type: ignore[method-assign]
+        cli._wait_for_screen_change_and_ready = (  # type: ignore[method-assign]
+            lambda _session, previous_lines, *, timeout: [*previous_lines, f"step-{len(previous_lines)}"]
+        )
+
+        ok, code = cli._queue_program_lines(
+            session,
+            ["10 DEFDBL A-Z", "20 A=.25", "30 PRINT A", "40 END"],
+            ready_timeout=2.0,
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(code, RUN_ERR_OK)
+        self.assertEqual(
+            session.queued,
+            ["10 DEFDBL A-Z<CR>", "20 A=.25<CR>", "30 PRINT A<CR>", "40 END<CR>"],
+        )
+
+    def test_load_program_with_fallback_uses_typed_input_after_ascii_load_failure(self) -> None:
+        from n88basic_cli import N88BasicCLI
+        from run_control_bridge import RUN_ERR_OK, RUN_ERR_PROTOCOL
+
+        class _Session:
+            def load(self, _filepath: str, _fmt: str) -> tuple[bool, dict[str, int]]:
+                return False, {"code": RUN_ERR_PROTOCOL}
+
+        cli = N88BasicCLI()
+        captured: dict[str, object] = {}
+
+        def _queue_program_lines(
+            _session: object,
+            program_lines: list[str],
+            *,
+            ready_timeout: float,
+        ) -> tuple[bool, int]:
+            captured["lines"] = list(program_lines)
+            captured["ready_timeout"] = ready_timeout
+            return True, RUN_ERR_OK
+
+        cli._queue_program_lines = _queue_program_lines  # type: ignore[method-assign]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            program = Path(tmp) / "prog.bas"
+            program.write_text("10 DEFDBL A-Z\r20 A=0.25\r\n30 PRINT A\n40 END\n", encoding="ascii")
+
+            ok, code = cli._load_program_with_fallback(
+                _Session(),
+                filepath=str(program),
+                ready_timeout=2.0,
+                wait_for_ready_after_ascii_load=False,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(code, RUN_ERR_OK)
+        self.assertEqual(
+            captured["lines"],
+            ["10 DEFDBL A-Z", "20 A=0.25", "30 PRINT A", "40 END"],
+        )
+        self.assertEqual(captured["ready_timeout"], 2.0)
+
+    def test_load_program_with_fallback_does_not_queue_missing_files(self) -> None:
+        from n88basic_cli import N88BasicCLI
+        from run_control_bridge import RUN_ERR_FILE_NOT_FOUND
+
+        class _Session:
+            def load(self, _filepath: str, _fmt: str) -> tuple[bool, dict[str, int]]:
+                return False, {"code": RUN_ERR_FILE_NOT_FOUND}
+
+        cli = N88BasicCLI()
+        cli._queue_program_lines = lambda *_args, **_kwargs: self.fail("unexpected typed fallback")  # type: ignore[method-assign]
+
+        ok, code = cli._load_program_with_fallback(
+            _Session(),
+            filepath="/tmp/missing.bas",
+            ready_timeout=2.0,
+            wait_for_ready_after_ascii_load=False,
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(code, RUN_ERR_FILE_NOT_FOUND)
+
     def test_interactive_screen_output_rewrites_active_line(self) -> None:
         from n88basic_cli import N88BasicCLI
 
@@ -291,6 +386,145 @@ class N88BasicRunnerTests(unittest.TestCase):
 
         self.assertEqual(stdout.getvalue(), "p\rpr\r\nSyntax error\r\nOk\r\n")
 
+    def test_capture_interactive_screen_lines_preserves_trailing_spaces(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        class _Session:
+            def textscr(self) -> tuple[bool, dict[str, dict[str, str]]]:
+                return True, {"fields": {"text": "NEC N-88 BASIC Version 2.3\nOk\n10 \n"}}
+
+        cli = N88BasicCLI()
+
+        self.assertEqual(
+            cli._capture_interactive_screen_lines(_Session()),
+            ["NEC N-88 BASIC Version 2.3", "Ok", "10 "],
+        )
+
+    def test_send_interactive_bytes_batches_short_bridge_input(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        class _Session:
+            def __init__(self) -> None:
+                self.queued: list[str] = []
+
+            def queue(self, sequence: str) -> tuple[bool, dict[str, int]]:
+                self.queued.append(sequence)
+                return True, {"code": 0}
+
+        cli = N88BasicCLI()
+        cli.interactive_bridge_session = _Session()
+
+        cli._send_interactive_bytes(b'PRINT "A"\r')
+
+        self.assertEqual(
+            cli.interactive_bridge_session.queued,
+            ['PRINT "A"<CR>'],
+        )
+
+    def test_send_interactive_bytes_splits_long_bridge_input_into_chunks(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        class _Session:
+            def __init__(self) -> None:
+                self.queued: list[str] = []
+
+            def queue(self, sequence: str) -> tuple[bool, dict[str, int]]:
+                self.queued.append(sequence)
+                return True, {"code": 0}
+
+        cli = N88BasicCLI()
+        cli.interactive_bridge_session = _Session()
+
+        cli._send_interactive_bridge_chunks(b"1234567890", max_chunk_tokens=4)
+
+        self.assertEqual(cli.interactive_bridge_session.queued, ["1234", "5678", "90"])
+
+    def test_encode_bridge_tokens_maps_backspace(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        cli = N88BasicCLI()
+
+        self.assertEqual(cli._encode_bridge_tokens(b"AB\x7fC\r"), ["A", "B", "\x08", "C", "<CR>"])
+
+    def test_send_interactive_bytes_retries_when_bridge_queue_is_full(self) -> None:
+        from n88basic_cli import N88BasicCLI
+        from run_control_bridge import RUN_ERR_OK, RUN_ERR_QUEUE_FULL
+
+        class _Proc:
+            def poll(self) -> None:
+                return None
+
+        class _Session:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.queued: list[str] = []
+
+            def queue(self, sequence: str) -> tuple[bool, dict[str, int]]:
+                self.calls += 1
+                if self.calls == 1:
+                    return False, {"code": RUN_ERR_QUEUE_FULL}
+                self.queued.append(sequence)
+                return True, {"code": RUN_ERR_OK}
+
+        cli = N88BasicCLI()
+        cli.quasi88_proc = _Proc()
+        cli.interactive_bridge_session = _Session()
+
+        with patch("n88basic_cli.time.sleep"):
+            cli._send_interactive_bytes(b"A")
+
+        self.assertEqual(cli.interactive_bridge_session.queued, ["A"])
+        self.assertEqual(cli.interactive_bridge_session.calls, 2)
+
+    def test_send_interactive_bytes_locally_erases_previous_character_on_backspace(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        class _Session:
+            def __init__(self) -> None:
+                self.queued: list[str] = []
+
+            def queue(self, sequence: str) -> tuple[bool, dict[str, int]]:
+                self.queued.append(sequence)
+                return True, {"code": 0}
+
+        cli = N88BasicCLI()
+        cli.interactive_bridge_session = _Session()
+        cli._interactive_line_open = True
+        cli._interactive_line_length = len("10 AB")
+        stdout = io.StringIO()
+
+        with patch("sys.stdout", stdout):
+            cli._send_interactive_bytes(b"\x7f")
+
+        self.assertEqual(stdout.getvalue(), "\b \b")
+        self.assertEqual(cli._interactive_line_length, len("10 A"))
+        self.assertEqual(cli.interactive_bridge_session.queued, ["\x08"])
+
+    def test_send_interactive_bytes_locally_closes_active_line_on_enter(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        class _Session:
+            def __init__(self) -> None:
+                self.queued: list[str] = []
+
+            def queue(self, sequence: str) -> tuple[bool, dict[str, int]]:
+                self.queued.append(sequence)
+                return True, {"code": 0}
+
+        cli = N88BasicCLI()
+        cli.interactive_bridge_session = _Session()
+        cli._interactive_line_open = True
+        cli._interactive_line_length = len("10 A=1")
+        stdout = io.StringIO()
+
+        with patch("sys.stdout", stdout):
+            cli._send_interactive_bytes(b"\r")
+
+        self.assertEqual(stdout.getvalue(), "\r\n")
+        self.assertFalse(cli._interactive_line_open)
+        self.assertEqual(cli._interactive_line_length, 0)
+        self.assertEqual(cli.interactive_bridge_session.queued, ["<CR>"])
+
     def test_interactive_screen_output_closes_active_line_before_result_rows(self) -> None:
         from n88basic_cli import N88BasicCLI
 
@@ -307,6 +541,79 @@ class N88BasicRunnerTests(unittest.TestCase):
         self.assertEqual(rendered, "\r\n4\r\nOk\r\n")
         self.assertFalse(cli._interactive_line_open)
         self.assertEqual(cli._interactive_line_length, 0)
+
+    def test_poll_run_completion_accumulates_scrolled_output(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        class _Session:
+            def wait(self, _timeout_ms: int) -> None:
+                return None
+
+        states = iter(
+            [
+                {"lines": ["RUN", "A", "B"], "output_lines": ["A", "B"], "completed": False},
+                {"lines": ["RUN", "B", "C"], "output_lines": ["B", "C"], "completed": False},
+                {"lines": ["RUN", "C", "D", "Ok"], "output_lines": ["C", "D"], "completed": True},
+            ]
+        )
+
+        cli = N88BasicCLI()
+        cli._capture_run_screen_state = lambda _session: next(states)  # type: ignore[method-assign]
+
+        completed, output_lines = cli._poll_run_completion(_Session(), timeout_seconds=1.0)
+
+        self.assertTrue(completed)
+        self.assertEqual(output_lines, ["A", "B", "C", "D"])
+
+    def test_poll_run_completion_skips_inflight_trailing_line_until_completed(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        class _Session:
+            def wait(self, _timeout_ms: int) -> None:
+                return None
+
+        states = iter(
+            [
+                {
+                    "lines": ["RUN", "3.14159265358979323#", "2.141592653589793", "3.14159"],
+                    "output_lines": ["3.14159265358979323#", "2.141592653589793", "3.14159"],
+                    "completed": False,
+                },
+                {
+                    "lines": [
+                        "RUN",
+                        "3.14159265358979323#",
+                        "2.141592653589793",
+                        "3.14159265358979323846#",
+                        "2.141592653589793",
+                        "Ok",
+                    ],
+                    "output_lines": [
+                        "3.14159265358979323#",
+                        "2.141592653589793",
+                        "3.14159265358979323846#",
+                        "2.141592653589793",
+                    ],
+                    "completed": True,
+                },
+            ]
+        )
+
+        cli = N88BasicCLI()
+        cli._capture_run_screen_state = lambda _session: next(states)  # type: ignore[method-assign]
+
+        completed, output_lines = cli._poll_run_completion(_Session(), timeout_seconds=1.0)
+
+        self.assertTrue(completed)
+        self.assertEqual(
+            output_lines,
+            [
+                "3.14159265358979323#",
+                "2.141592653589793",
+                "3.14159265358979323846#",
+                "2.141592653589793",
+            ],
+        )
 
     def test_startup_screen_snapshot_uses_crlf(self) -> None:
         from n88basic_cli import N88BasicCLI
@@ -394,6 +701,31 @@ class N88BasicRunnerTests(unittest.TestCase):
         self.assertIn(b"A", output)
         self.assertNotIn(b"Syntax error", output)
 
+    def test_interactive_launch_backspace_removes_previous_character(self) -> None:
+        rom_dir = ROOT_DIR / "downloads" / "n88basic" / "roms"
+        quasi88_bin = ROOT_DIR / "vendor" / "quasi88" / "quasi88.sdl2"
+        if not rom_dir.is_dir() or not quasi88_bin.is_file():
+            self.skipTest("N88-BASIC runtime is not available")
+
+        proc, master_fd = self._spawn_pty(["bash", str(RUNNER)])
+        try:
+            self._read_until(master_fd, b"Ok", timeout=30)
+            os.write(master_fd, b"10 AB\x7fC\r")
+            time.sleep(2)
+            os.write(master_fd, b"LIST\r")
+            output = self._read_until(master_fd, b"Ok", timeout=30)
+            os.write(master_fd, b"\x04")
+            proc.wait(timeout=10)
+        finally:
+            os.close(master_fd)
+            if proc.poll() is None:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                proc.wait(timeout=10)
+
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn(b"10 AC", output)
+        self.assertNotIn(b"10 ABC", output)
+
     def test_file_launch_loads_program_and_runs_after_manual_run(self) -> None:
         rom_dir = ROOT_DIR / "downloads" / "n88basic" / "roms"
         quasi88_bin = ROOT_DIR / "vendor" / "quasi88" / "quasi88.sdl2"
@@ -417,6 +749,63 @@ class N88BasicRunnerTests(unittest.TestCase):
         self.assertIn(b"HELLO, WORLD", output)
         self.assertIn(b"INTEGER 14", output)
         self.assertIn(b"PI", output)
+
+    def test_file_launch_falls_back_for_unsuffixed_decimal_literals(self) -> None:
+        rom_dir = ROOT_DIR / "downloads" / "n88basic" / "roms"
+        quasi88_bin = ROOT_DIR / "vendor" / "quasi88" / "quasi88.sdl2"
+        if not rom_dir.is_dir() or not quasi88_bin.is_file():
+            self.skipTest("N88-BASIC runtime is not available")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            program = Path(tmp) / "frac.bas"
+            program.write_text("10 DEFDBL A-Z\n20 A=0.25\n30 PRINT A\n40 END\n", encoding="ascii")
+
+            proc, master_fd = self._spawn_pty(["bash", str(RUNNER), "--file", str(program)])
+            try:
+                self._read_until(master_fd, b"Ok", timeout=60)
+                os.write(master_fd, b"RUN\r")
+                output = self._read_until(master_fd, b".25", timeout=30)
+                output += self._read_until(master_fd, b"Ok", timeout=30)
+                os.write(master_fd, b"\x04")
+                proc.wait(timeout=10)
+            finally:
+                os.close(master_fd)
+                if proc.poll() is None:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    proc.wait(timeout=10)
+
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn(b".25", output)
+        self.assertNotIn(b"failed to load BASIC file", output)
+
+    def test_run_file_falls_back_for_unsuffixed_decimal_literals(self) -> None:
+        rom_dir = ROOT_DIR / "downloads" / "n88basic" / "roms"
+        quasi88_bin = ROOT_DIR / "vendor" / "quasi88" / "quasi88.sdl2"
+        if not rom_dir.is_dir() or not quasi88_bin.is_file():
+            self.skipTest("N88-BASIC runtime is not available")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            for literal in ("0.25", ".25"):
+                program = tmp_path / f"frac-{literal.replace('.', 'dot')}.bas"
+                program.write_text(
+                    f"10 DEFDBL A-Z\n20 A={literal}\n30 PRINT A\n40 END\n",
+                    encoding="ascii",
+                )
+
+                with self.subTest(literal=literal):
+                    result = subprocess.run(
+                        ["bash", str(RUNNER), "--run", "--file", str(program)],
+                        cwd=ROOT_DIR,
+                        env=self._runtime_env(),
+                        capture_output=True,
+                        text=True,
+                        timeout=90,
+                    )
+
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), ".25")
+                    self.assertNotIn(f"A={literal}", result.stdout)
 
     def test_run_file_rejects_programs_that_request_input(self) -> None:
         rom_dir = ROOT_DIR / "downloads" / "n88basic" / "roms"

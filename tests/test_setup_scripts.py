@@ -98,6 +98,45 @@ def _run(command: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.Co
 
 
 class SetupScriptTests(unittest.TestCase):
+    def test_setup_all_runs_every_setup_script_in_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            _copy_repo_files(temp_path, ["setup/all.sh"])
+            expected_scripts = [
+                "6502.sh",
+                "basic80.sh",
+                "nbasic.sh",
+                "n88basic.sh",
+                "fm7basic.sh",
+                "fm11basic.sh",
+                "gwbasic.sh",
+                "msxbasic.sh",
+                "qbasic.sh",
+                "grantsbasic.sh",
+            ]
+            log_path = temp_path / "setup.log"
+            for script_name in expected_scripts:
+                _write_executable(
+                    temp_path / "setup" / script_name,
+                    f"""#!/usr/bin/env bash
+                    set -euo pipefail
+                    printf '%s\\n' "{script_name}" >>"{log_path}"
+                    """,
+                )
+
+            result = _run(
+                ["bash", "setup/all.sh"],
+                cwd=temp_path,
+                env=os.environ.copy(),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                log_path.read_text(encoding="ascii").splitlines(),
+                expected_scripts,
+            )
+            self.assertIn("Completed setup for all BASIC environments", result.stdout)
+
     def test_setup_6502_verifies_assets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
@@ -194,12 +233,12 @@ PY
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((temp_path / "downloads/pc8001/N80_11.rom").read_bytes(), b"rom")
 
-    def test_setup_nbasic_downloads_neo_kobe_rom(self) -> None:
+    def test_setup_nbasic_downloads_pc8001_rom_zip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
             _copy_repo_files(temp_path, ["setup/nbasic.sh"])
             bin_dir = temp_path / "bin"
-            archive_path = temp_path / "downloads/pc8001/neo-kobe-emulator-pack-2013-08-17.7z"
+            archive_path = temp_path / "downloads/pc8001/pc8001.zip"
             curl_log = temp_path / "curl.log"
             _write_executable(
                 bin_dir / "curl",
@@ -236,7 +275,7 @@ PY
                   esac
                 done
                 mkdir -p "${outdir}"
-                printf 'rom' >"${outdir}/PC-8001(1.1).rom"
+                printf 'rom' >"${outdir}/n80v110.rom"
                 """,
             )
 
@@ -247,7 +286,7 @@ PY
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(archive_path.read_bytes(), b"archive")
             self.assertEqual((temp_path / "downloads/pc8001/N80_11.rom").read_bytes(), b"rom")
-            self.assertIn("archive.org/download/neo-kobe-emulator-pack-2013-08-17.7z", curl_log.read_text(encoding="ascii"))
+            self.assertIn("archive.org/download/mame-0.221-roms-merged/pc8001.zip", curl_log.read_text(encoding="ascii"))
 
     def test_setup_n88basic_installs_roms_from_argument(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -343,7 +382,7 @@ PY
             self.assertEqual((temp_path / "downloads/n88basic/roms/KANJI1.ROM").read_bytes(), b"KANJI1.ROM")
             self.assertIn("archive.org/download/neo-kobe-emulator-pack-2013-08-17.7z", curl_log.read_text(encoding="ascii"))
 
-    def test_setup_fm7basic_downloads_neo_kobe_roms(self) -> None:
+    def test_setup_fm7basic_downloads_fm7_roms(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
             _copy_repo_files(
@@ -354,7 +393,7 @@ PY
                 ],
             )
             bin_dir = temp_path / "bin"
-            archive_path = temp_path / "downloads/fm7basic/neo-kobe-emulator-pack-2013-08-17.7z"
+            archive_path = temp_path / "downloads/fm7basic/fm7.zip"
             curl_log = temp_path / "curl.log"
             _write_executable(
                 bin_dir / "curl",
@@ -379,25 +418,29 @@ PY
                 """,
             )
             _write_executable(
-                bin_dir / "7z",
+                bin_dir / "unzip",
                 """#!/usr/bin/env bash
                 set -euo pipefail
                 outdir=""
-                for arg in "$@"; do
-                  case "$arg" in
-                    -o*)
-                      outdir="${arg#-o}"
+                while [[ $# -gt 0 ]]; do
+                  case "$1" in
+                    -d)
+                      outdir="$2"
+                      shift 2
+                      ;;
+                    *)
+                      shift
                       ;;
                   esac
                 done
-                mkdir -p "${outdir}/Fujitsu FM-7/xm7_3460/Win32"
-                printf 'fbasic' >"${outdir}/Fujitsu FM-7/xm7_3460/Win32/FBASIC30.ROM"
-                printf 'subsysc' >"${outdir}/Fujitsu FM-7/xm7_3460/Win32/SUBSYS_C.ROM"
-                printf 'init' >"${outdir}/Fujitsu FM-7/xm7_3460/Win32/INITIATE.ROM"
-                printf 'suba' >"${outdir}/Fujitsu FM-7/xm7_3460/Win32/SUBSYS_A.ROM"
-                printf 'subb' >"${outdir}/Fujitsu FM-7/xm7_3460/Win32/SUBSYS_B.ROM"
-                printf 'subcg' >"${outdir}/Fujitsu FM-7/xm7_3460/Win32/SUBSYSCG.ROM"
-                printf 'kanji1' >"${outdir}/Fujitsu FM-7/xm7_3460/Win32/KANJI1.ROM"
+                mkdir -p "${outdir}/fm7740sx"
+                printf 'fbasic' >"${outdir}/fm7740sx/fbasic30.rom"
+                printf 'subsysc' >"${outdir}/subsys_c.rom"
+                printf 'init' >"${outdir}/fm7740sx/initiate.rom"
+                printf 'suba' >"${outdir}/fm7740sx/subsys_a.rom"
+                printf 'subb' >"${outdir}/fm7740sx/subsys_b.rom"
+                printf 'subcg' >"${outdir}/fm7740sx/subsyscg.rom"
+                printf 'kanji1' >"${outdir}/kanji.rom"
                 """,
             )
             _write_executable(
@@ -421,7 +464,7 @@ PY
             self.assertEqual((temp_path / "downloads/fm7basic/mame-roms/fm77av/initiate.rom").read_bytes(), b"init")
             self.assertEqual((temp_path / "downloads/fm7basic/mame-roms/fm77av/fbasic30.rom").read_bytes(), b"fbasic")
             self.assertEqual((temp_path / "downloads/fm7basic/mame-roms/fm77av/kanji.rom").read_bytes(), b"kanji1")
-            self.assertIn("archive.org/download/neo-kobe-emulator-pack-2013-08-17.7z", curl_log.read_text(encoding="ascii"))
+            self.assertIn("archive.org/download/mame-0.221-roms-merged/fm7.zip", curl_log.read_text(encoding="ascii"))
 
     def test_setup_fm7basic_installs_mame_via_apt_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -586,6 +629,112 @@ EOF
             self.assertIn("https://archive.org/download/mame-0.221-roms-merged/fm11.zip", curl_log.read_text(encoding="ascii"))
             self.assertIn("Run with: ./run/fm11basic.sh", result.stdout)
 
+    def test_setup_fm11basic_skips_restaging_when_assets_are_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            _copy_repo_files(
+                temp_path,
+                [
+                    "setup/fm11basic.sh",
+                    "scripts/fm11basic-common.sh",
+                    "scripts/bootstrap_fm11basic_assets.sh",
+                ],
+            )
+
+            bin_dir = temp_path / "bin"
+            archive_dir = temp_path / "archives"
+            archive_dir.mkdir()
+
+            _write_executable(
+                bin_dir / "curl",
+                f"""#!/usr/bin/env bash
+                set -euo pipefail
+                out=""
+                url=""
+                while [[ $# -gt 0 ]]; do
+                  case "$1" in
+                    --output|-o)
+                      out="$2"
+                      shift 2
+                      ;;
+                    *)
+                      url="$1"
+                      shift
+                      ;;
+                  esac
+                done
+                case "${{url}}" in
+                  http://nanno.bf1.jp/softlib/program/fm11.zip)
+                    cp "{archive_dir / 'fm11_x86.zip'}" "${{out}}"
+                    ;;
+                  https://archive.org/download/mame-0.221-roms-merged/fm11.zip)
+                    cp "{archive_dir / 'fm11_roms.zip'}" "${{out}}"
+                    ;;
+                  http://nanno.bf1.jp/softlib/man/fm11/fb2hd00.img)
+                    cp "{archive_dir / 'fb2hd00.img'}" "${{out}}"
+                    ;;
+                  *)
+                    exit 1
+                    ;;
+                esac
+                """,
+            )
+            _write_executable(bin_dir / "unzip", "#!/usr/bin/env bash\nexec /usr/bin/unzip \"$@\"\n")
+            _write_executable(bin_dir / "python3", "#!/usr/bin/env bash\nexit 0\n")
+            _write_executable(bin_dir / "Xvfb", "#!/usr/bin/env bash\nexit 0\n")
+            _write_executable(bin_dir / "xdpyinfo", "#!/usr/bin/env bash\nexit 0\n")
+            _write_executable(bin_dir / "xdotool", "#!/usr/bin/env bash\nexit 0\n")
+            _write_executable(bin_dir / "xclip", "#!/usr/bin/env bash\nexit 0\n")
+            _write_executable(bin_dir / "wine", "#!/usr/bin/env bash\nexit 0\n")
+            _write_noop_fbasic_apt_tools(bin_dir)
+
+            disk_bytes = b"fm11-disk"
+            (archive_dir / "fb2hd00.img").write_bytes(disk_bytes)
+
+            with zipfile.ZipFile(archive_dir / "fm11_x86.zip", "w") as archive:
+                archive.writestr("Fm11.exe", "exe\n")
+            with zipfile.ZipFile(archive_dir / "fm11_roms.zip", "w") as archive:
+                archive.writestr("boot6809.rom", "6809\n")
+                archive.writestr("boot8088.rom", "8088\n")
+                archive.writestr("kanji.rom", "kanji\n")
+                archive.writestr("subsys.rom", "subsys\n")
+                archive.writestr("subsys_e.rom", "subsys_e\n")
+
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            env["CLASSIC_BASIC_FM11_EMULATOR_SHA256"] = subprocess.check_output(
+                ["sha256sum", str(archive_dir / "fm11_x86.zip")], text=True
+            ).split()[0]
+            env["CLASSIC_BASIC_FM11_DISK_SHA256"] = subprocess.check_output(
+                ["sha256sum", str(archive_dir / "fb2hd00.img")], text=True
+            ).split()[0]
+
+            first = _run(["bash", "setup/fm11basic.sh"], cwd=temp_path, env=env)
+            self.assertEqual(first.returncode, 0, first.stderr)
+
+            _write_executable(
+                bin_dir / "unzip",
+                """#!/usr/bin/env bash
+                set -euo pipefail
+                echo "unexpected unzip invocation" >&2
+                exit 99
+                """,
+            )
+            _write_executable(
+                bin_dir / "curl",
+                """#!/usr/bin/env bash
+                set -euo pipefail
+                echo "unexpected curl invocation" >&2
+                exit 98
+                """,
+            )
+
+            second = _run(["bash", "setup/fm11basic.sh"], cwd=temp_path, env=env)
+
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual((temp_path / "downloads/fm11basic/staged/emulator-x86/Fm11.exe").read_text(encoding="ascii"), "exe\n")
+            self.assertEqual((temp_path / "downloads/fm11basic/staged/disks/fb2hd00.img").read_bytes(), disk_bytes)
+
     def test_setup_fm7basic_fails_when_verifyroms_rejects_romset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
@@ -623,7 +772,7 @@ EOF
             temp_path = Path(tmp)
             _copy_repo_files(temp_path, ["setup/msxbasic.sh"])
             bin_dir = temp_path / "bin"
-            archive_path = temp_path / "downloads/neo-kobe-emulator-pack-2013-08-17.7z"
+            archive_path = temp_path / "downloads/vg802020.zip"
             sha = "1c85dac5536fa3ba6f2cb70deba02ff680b34ac6cc787d2977258bd663a99555"
 
             _write_executable(
@@ -655,7 +804,7 @@ EOF
                   esac
                 done
                 mkdir -p "${outdir}"
-                python3 - "${outdir}/vg8020-20_basic-bios1.rom" <<'PY'
+                python3 - "${outdir}/8020-20bios.rom" <<'PY'
 import pathlib
 import sys
 

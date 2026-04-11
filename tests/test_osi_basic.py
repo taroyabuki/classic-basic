@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from z80_basic import osi_basic
-from z80_basic.osi_basic import OsiBasicMachine, build_staged_input, load_basic_program
+from z80_basic.osi_basic import OsiBasicMachine, SessionConsole, build_staged_input, load_basic_program
 from z80_basic.terminal import BufferedConsole
 
 
@@ -81,6 +81,41 @@ class OsiBasicTests(unittest.TestCase):
 
         self.assertIn(b"10 PRINT 2+2\r20 END\r", staged_input)
         self.assertNotIn(b"RUN\r", staged_input)
+
+    def test_session_console_normalizes_lowercase_letters_to_uppercase(self) -> None:
+        console = SessionConsole(staged_input=b"print a\r")
+
+        self.assertEqual(
+            [console.read_byte() for _ in range(8)],
+            [ord("P"), ord("R"), ord("I"), ord("N"), ord("T"), ord(" "), ord("A"), 0x0D],
+        )
+
+    def test_session_console_maps_backspace_and_del_to_osi_rubout(self) -> None:
+        console = SessionConsole(staged_input=b"A\x08\x7f\r")
+
+        self.assertEqual(
+            [console.read_byte() for _ in range(4)],
+            [ord("A"), 0x5F, 0x5F, 0x0D],
+        )
+
+    def test_interactive_backspace_erases_character_on_terminal(self) -> None:
+        """When the user presses backspace/DEL in interactive mode, the ROM echoes
+        the OSI rubout character (_) which is intercepted and converted to a
+        backspace+space+backspace erase sequence on the terminal."""
+        boot = build_staged_input(program_path=None, exec_text=None)
+
+        written: list[int] = []
+
+        class FakeTerminal:
+            def write_byte(self, value: int) -> None:
+                written.append(value)
+
+        console = SessionConsole(staged_input=boot + b"A\x7f\r\x04", terminal=FakeTerminal())
+
+        OsiBasicMachine().run(console=console, max_steps=300_000)
+
+        written_bytes = bytes(written)
+        self.assertIn(b"\x08 \x08", written_bytes)
 
     def test_load_basic_program_accepts_lf_crlf_and_cr_line_endings(self) -> None:
         cases = {

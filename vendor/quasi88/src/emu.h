@@ -1,138 +1,88 @@
 #ifndef EMU_H_INCLUDED
 #define EMU_H_INCLUDED
 
-/*
- * PHASE 7 CONTRACT LABELS (grep-able markers for state contract verification)
- *
- * COMPLETED_POLICY=first_ready_transition
- *   - First hit of READY range after RUNNING ¢™ COMPLETED
- *   - Subsequent hits ¢™ READY
- *   - was_running_program flag tracks this
- *
- * UNKNOWN_FALLBACK=hooks_unconfigured
- *   - If ready_low=0 OR ready_high=0 OR input_wait_pc=0 OR error_pc=0
- *   - State observation cannot proceed, remains UNKNOWN
- *
- * STATE_OWNER=set_emu_exec_mode (for RUNNING)
- * STATE_OWNER=set_exec_state_by_pc (for READY/INPUT_WAIT/ERROR/COMPLETED)
- * STATE_OWNER=clear_exec_state (for UNKNOWN)
- */
 
-extern	int	cpu_timing;			/* SUB-CPU ∂Ó∆∞ ??	*/
-extern	int	select_main_cpu;		/* -cpu 0 º¬π‘§π§Î CPU	*/
-extern	int	dual_cpu_count;			/* -cpu 1 ∆±ª˛ΩËÕ˝ STEP øÙ*/
-extern	int	CPU_1_COUNT;			/* §Ω§Œ°¢ΩÈ¥¸√Õ		*/
-extern	int	cpu_slice_us;			/* -cpu 2 ΩËÕ˝ª˛ ¨≥‰ (us)*/
+extern int cpu_timing;							/* SUB-CPU ÈßÜÂãïÊñπÂºè */
+extern int select_main_cpu;						/* -cpu 0 ÂÆüË°å„Åô„ÇãCPU */
+extern int dual_cpu_count;						/* -cpu 1 ÂêåÊôÇÂá¶ÁêÜSTEPÊï∞ */
+extern int CPU_1_COUNT;							/* „Åù„ÅÆ„ÄÅÂàùÊúüÂÄ§ */
+extern int cpu_slice_us;						/* -cpu 2 Âá¶ÁêÜÊôÇÂàÜÂâ≤(us)*/
 
-extern	int	trace_counter;			/* TRACE ª˛§Œ•´•¶•Û•ø	*/
+extern int trace_counter;						/* TRACE ÊôÇ„ÅÆ„Ç´„Ç¶„É≥„Çø */
 
-/*
- * Execution state API for headless automation
- *
- * EMULATOR EXECUTION STATES:
- *   QUASI88_EXEC_UNKNOWN   - Initial state, or not in EXEC mode, or indeterminate
- *   QUASI88_EXEC_RUNNING   - Emulator is actively executing BASIC program
- *
- * BASIC INTERPRETER STATES (synthetic test verified):
- *   QUASI88_EXEC_READY     - BASIC interpreter at command prompt (READY/"Ok")
- *   QUASI88_EXEC_INPUT_WAIT - BASIC INPUT statement waiting for user input
- *   QUASI88_EXEC_COMPLETED - BASIC program completed normally (END/SYSTEM)
- *   QUASI88_EXEC_ERROR     - BASIC runtime error occurred
- *
- * STATE TRANSITION RULES:
- *   - Entering EXEC mode (quasi88_exec) sets RUNNING
- *   - READY/INPUT_WAIT/COMPLETED/ERROR are set by PC address observation
- *   - Leaving EXEC mode (MONITOR/MENU/PAUSE/QUIT/RESET) clears to UNKNOWN
- *
- * OBSERVATION METHOD:
- *   - PC address monitoring in main_fetch() (pc88main.c)
- *   - No OCR or framebuffer scraping (explicitly forbidden)
- *
- * VERIFICATION:
- *   - Synthetic direct assertion tests: vendor/quasi88/src/test_queue_state.c
- *   - ROM real-execution measurement: TODO (Phase 2, artifacts/rom-state/)
- *   - Runtime state tests: TODO (Phase 3, vendor/quasi88/src/test_runtime_exec_state.c)
- *
- * SEE: emu.c for detailed state semantics
- *      pc88main.c for PC address hook points
- */
 typedef enum {
-    QUASI88_EXEC_UNKNOWN = 0,
-    QUASI88_EXEC_RUNNING,
-    QUASI88_EXEC_READY,
-    QUASI88_EXEC_INPUT_WAIT,
-    QUASI88_EXEC_COMPLETED,
-    QUASI88_EXEC_ERROR
+	QUASI88_EXEC_UNKNOWN = 0,
+	QUASI88_EXEC_RUNNING,
+	QUASI88_EXEC_READY,
+	QUASI88_EXEC_INPUT_WAIT,
+	QUASI88_EXEC_COMPLETED,
+	QUASI88_EXEC_ERROR
 } quasi88_exec_state_t;
 
 
-typedef struct{					/* •÷•Ï°º•Ø•›•§•Û•»¿©∏Ê */
-  short	type;
-  word	addr;
+typedef struct {								/* „Éñ„É¨„Éº„ÇØ„Éù„Ç§„É≥„ÉàÂà∂Âæ° */
+	short type;
+	word  addr;
 } break_t;
 
-typedef struct{					/* FDC •÷•Ï°º•Ø•›•§•Û•»¿©∏Ê */
-  short type;
-  short drive;
-  short track;
-  short sector;
+typedef struct {								/* FDC „Éñ„É¨„Éº„ÇØ„Éù„Ç§„É≥„ÉàÂà∂Âæ° */
+	short type;
+	short drive;
+	short track;
+	short sector;
 } break_drive_t;
 
-enum BPcpu { BP_MAIN, BP_SUB,                                    EndofBPcpu  };
-enum BPtype{ BP_NONE, BP_PC,  BP_READ, BP_WRITE, BP_IN, BP_OUT,  BP_DIAG,
-								 EndofBPtype };
+enum BPcpu { BP_MAIN, BP_SUB, EndofBPcpu  };
+enum BPtype {
+	BP_NONE, BP_PC,  BP_READ, BP_WRITE, BP_IN, BP_OUT,  BP_DIAG,
+	EndofBPtype
+};
 
-#define	NR_BP			(10)		/* •÷•Ï°º•Ø•›•§•Û•»§ŒøÙ   */
-#define	BP_NUM_FOR_SYSTEM	(9)		/* •∑•π•∆•‡§¨ª»§¶ BP §Œ»÷πÊ */
-extern	break_t	break_point[2][NR_BP];
-extern  break_drive_t break_point_fdc[NR_BP];
-
-
-
-
+#define NR_BP					(10)			/* „Éñ„É¨„Éº„ÇØ„Éù„Ç§„É≥„Éà„ÅÆÊï∞ */
+#define BP_NUM_FOR_SYSTEM		(9)				/* „Ç∑„Çπ„ÉÜ„É†„Åå‰Ωø„ÅÜBP„ÅÆÁï™Âè∑ */
+extern break_t break_point[2][NR_BP];
+extern break_drive_t break_point_fdc[NR_BP];
 
 
 
 
 
-	/**** ¥ÿøÙ ****/
 
-void	emu_breakpoint_init( void );
-void	emu_reset( void );
-void	set_emu_exec_mode( int mode );
 
-/* Internal: clear exec state when leaving EXEC context */
-void	clear_exec_state(void);
 
-void	emu_init(void);
-void	emu_main(void);
 
-/*
- * Execution state observation API
- *
- * Returns current emulator execution state.
- * See emu.c for detailed state semantics and limitations.
- */
+/**** Èñ¢Êï∞ ****/
+
+void emu_breakpoint_init(void);
+void emu_reset(void);
+
+enum EmuExecMode {
+	GO,
+	TRACE,
+	STEP,
+	TRACE_CHANGE
+};
+void set_emu_exec_mode(int mode);
+void clear_exec_state(void);
+
+void emu_init(void);
+void emu_main(void);
+void emu_status(void);
+void emu_status_message_set(int timeout,
+							const char *message_ascii,
+							const char *message_japanese);
+void emu_status_message_clear(void);
+
+
+
+int  quasi88_now_subcpu_mode(void);
+void quasi88_set_subcpu_mode(int mode);
 quasi88_exec_state_t quasi88_get_exec_state(void);
-
-/*
- * Internal: Set BASIC interpreter state based on PC observation
- * Called from main_fetch() in pc88main.c when ROM hook addresses are reached.
- */
 void set_exec_state_by_pc(word pc);
-
-/*
- * Internal: Configure ROM hook addresses for state observation
- * This must be called before EXEC mode to establish observation points.
- */
 void quasi88_set_rom_hook_addresses(word ready_low, word ready_high,
-                                     word input_wait_pc, word error_pc);
-
-
-/*
- * Configuration internal state for testing (DO NOT USE in production)
- */
+									word input_wait_pc, word error_pc);
 int quasi88_get_was_running_program(void);
 void quasi88_set_was_running_program(int value);
 
-#endif	/* EMU_H_INCLUDED */
+
+#endif /* EMU_H_INCLUDED */

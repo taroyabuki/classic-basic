@@ -157,7 +157,27 @@ copy_file() {
   cp -f "${source_path}" "${destination_path}"
 }
 
+fm11basic_assets_are_staged() {
+  local file_path
+
+  for file_path in \
+    "${DEFAULT_FM11BASIC_EMULATOR_EXE}" \
+    "${DEFAULT_FM11BASIC_DISK_STAGE_PATH}" \
+    "${DEFAULT_FM11BASIC_ROM_STAGE_DIR}/boot6809.rom" \
+    "${DEFAULT_FM11BASIC_ROM_STAGE_DIR}/boot8088.rom" \
+    "${DEFAULT_FM11BASIC_ROM_STAGE_DIR}/kanji.rom" \
+    "${DEFAULT_FM11BASIC_ROM_STAGE_DIR}/subsys.rom" \
+    "${DEFAULT_FM11BASIC_ROM_STAGE_DIR}/subsys_e.rom"
+  do
+    [[ -f "${file_path}" ]] || return 1
+  done
+}
+
 bootstrap_fm11basic_assets() {
+  if fm11basic_assets_are_staged; then
+    return 0
+  fi
+
   require_command_path curl
   require_command_path unzip
   require_command_path sha256sum

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -92,25 +94,28 @@ class Fm7BasicCliTests(unittest.TestCase):
         proc.wait.return_value = 0
         proc.stdout = None
         proc.stderr = None
-        with (
-            mock.patch.dict("os.environ", {"DISPLAY": ":1"}, clear=True),
-            mock.patch.object(
-                fm7basic_cli,
-                "_launch_interactive_session",
-                return_value=(proc, None, Path("/tmp/input.txt")),
-            ),
-            mock.patch.object(fm7basic_cli, "_forward_stdin_to_input_queue"),
-        ):
-            result = fm7basic_cli.run_interactive_session(
-                mame_command="mame",
-                rompath=Path("/tmp/roms"),
-                driver="fm7",
-                file_path=None,
-                extra_mame_args=[],
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            with (
+                mock.patch.dict("os.environ", {"DISPLAY": ":1"}, clear=True),
+                mock.patch.object(
+                    fm7basic_cli,
+                    "_launch_interactive_session",
+                    return_value=(proc, temp_path, temp_path / "input.txt"),
+                ),
+                mock.patch.object(fm7basic_cli, "_forward_stdin_to_input_queue"),
+                mock.patch.object(fm7basic_cli, "_shutdown_interactive_process", return_value=0) as shutdown_process,
+            ):
+                result = fm7basic_cli.run_interactive_session(
+                    mame_command="mame",
+                    rompath=Path("/tmp/roms"),
+                    driver="fm7",
+                    file_path=None,
+                    extra_mame_args=[],
+                )
 
         self.assertEqual(result, 0)
-        proc.terminate.assert_called_once()
+        shutdown_process.assert_called_once_with(proc, temp_dir=temp_path)
 
     def test_run_interactive_session_returns_zero_on_eof(self) -> None:
         proc = mock.Mock()
@@ -118,25 +123,28 @@ class Fm7BasicCliTests(unittest.TestCase):
         proc.wait.return_value = 0
         proc.stdout = None
         proc.stderr = None
-        with (
-            mock.patch.dict("os.environ", {"DISPLAY": ":1"}, clear=True),
-            mock.patch.object(
-                fm7basic_cli,
-                "_launch_interactive_session",
-                return_value=(proc, None, Path("/tmp/input.txt")),
-            ),
-            mock.patch.object(fm7basic_cli, "_forward_stdin_to_input_queue"),
-        ):
-            result = fm7basic_cli.run_interactive_session(
-                mame_command="mame",
-                rompath=Path("/tmp/roms"),
-                driver="fm7",
-                file_path=None,
-                extra_mame_args=[],
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            with (
+                mock.patch.dict("os.environ", {"DISPLAY": ":1"}, clear=True),
+                mock.patch.object(
+                    fm7basic_cli,
+                    "_launch_interactive_session",
+                    return_value=(proc, temp_path, temp_path / "input.txt"),
+                ),
+                mock.patch.object(fm7basic_cli, "_forward_stdin_to_input_queue"),
+                mock.patch.object(fm7basic_cli, "_shutdown_interactive_process", return_value=0) as shutdown_process,
+            ):
+                result = fm7basic_cli.run_interactive_session(
+                    mame_command="mame",
+                    rompath=Path("/tmp/roms"),
+                    driver="fm7",
+                    file_path=None,
+                    extra_mame_args=[],
+                )
 
         self.assertEqual(result, 0)
-        proc.terminate.assert_called_once()
+        shutdown_process.assert_called_once_with(proc, temp_dir=temp_path)
 
     def test_run_headless_interactive_session_copies_console_snapshot(self) -> None:
         proc = mock.Mock()
@@ -191,6 +199,54 @@ class Fm7BasicCliTests(unittest.TestCase):
         self.assertEqual(echo_filter.filter_lines(["      PRI", "      PRINT 2+2", "4", "READY"]), ["4", "READY"])
         self.assertEqual(echo_filter.filter_lines(["PRINT 2+2"]), ["PRINT 2+2"])
 
+    def test_console_echo_filter_suppresses_repeated_numbered_line_until_prompt(self) -> None:
+        echo_filter = fm7basic_cli._ConsoleEchoFilter(suppress_terminal_echo=True)
+        echo_filter.record_input(b"10 a=10\n")
+
+        self.assertEqual(echo_filter.filter_lines(["10 A=10"]), [])
+        self.assertEqual(echo_filter.filter_lines(["10 A=10"]), [])
+        self.assertEqual(echo_filter.filter_lines(["10 A=10", "READY"]), ["READY"])
+
+    def test_copy_console_snapshot_does_not_reprint_program_listing_during_run(self) -> None:
+        snapshots = iter(
+            [
+                ["Ready"],
+                ["Ready", "10 A=1"],
+                ["Ready", "10 A=1", "20 PRINT A+1"],
+                ["Ready", "10 A=1", "20 PRINT A+1", "RUN"],
+                ["10 A=1", "20 PRINT A+1", "RUN", " 2", "Ready"],
+                ["10 A=1", "20 PRINT A+1", "RUN", " 2", "Ready"],
+            ]
+        )
+        stop_event = threading.Event()
+        stdout_sink = io.StringIO()
+        echo_filter = fm7basic_cli._ConsoleEchoFilter(suppress_terminal_echo=True)
+        echo_filter.record_input(b"10 a=1\n20 print a+1\nrun\n")
+
+        def fake_read_text_capture_lines(_path: Path) -> list[str]:
+            try:
+                return next(snapshots)
+            except StopIteration:
+                return ["10 A=1", "20 PRINT A+1", "RUN", " 2", "Ready"]
+
+        sleep_count = {"value": 0}
+
+        def fake_sleep(_seconds: float) -> None:
+            sleep_count["value"] += 1
+            if sleep_count["value"] >= 5:
+                stop_event.set()
+
+        with (
+            mock.patch.object(fbasic_batch, "_read_text_capture_lines", side_effect=fake_read_text_capture_lines),
+            mock.patch("fm7basic_cli.time.sleep", side_effect=fake_sleep),
+            mock.patch("sys.stdout", stdout_sink),
+        ):
+            thread = fm7basic_cli._copy_console_snapshot(Path("/tmp/fm7-screen.txt"), stop_event, echo_filter)
+            thread.join(timeout=1.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(stdout_sink.getvalue(), "Ready\n 2\nReady\n")
+
     def test_console_echo_filter_keeps_echo_for_non_tty_input(self) -> None:
         echo_filter = fm7basic_cli._ConsoleEchoFilter(suppress_terminal_echo=False)
         echo_filter.record_input(b"PRINT 2+2\n")
@@ -208,29 +264,32 @@ class Fm7BasicCliTests(unittest.TestCase):
         proc.wait.return_value = 0
         proc.stdout = None
         proc.stderr = None
-        with (
-            mock.patch.dict("os.environ", {"DISPLAY": ":1"}, clear=True),
-            mock.patch.object(
-                fm7basic_cli,
-                "_launch_interactive_session",
-                return_value=(proc, None, Path("/tmp/input.txt")),
-            ),
-            mock.patch.object(
-                fm7basic_cli,
-                "_forward_stdin_to_input_queue",
-                side_effect=KeyboardInterrupt,
-            ),
-        ):
-            result = fm7basic_cli.run_interactive_session(
-                mame_command="mame",
-                rompath=Path("/tmp/roms"),
-                driver="fm7",
-                file_path=None,
-                extra_mame_args=[],
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            with (
+                mock.patch.dict("os.environ", {"DISPLAY": ":1"}, clear=True),
+                mock.patch.object(
+                    fm7basic_cli,
+                    "_launch_interactive_session",
+                    return_value=(proc, temp_path, temp_path / "input.txt"),
+                ),
+                mock.patch.object(
+                    fm7basic_cli,
+                    "_forward_stdin_to_input_queue",
+                    side_effect=KeyboardInterrupt,
+                ),
+                mock.patch.object(fm7basic_cli, "_shutdown_interactive_process", return_value=0) as shutdown_process,
+            ):
+                result = fm7basic_cli.run_interactive_session(
+                    mame_command="mame",
+                    rompath=Path("/tmp/roms"),
+                    driver="fm7",
+                    file_path=None,
+                    extra_mame_args=[],
+                )
 
         self.assertEqual(result, 0)
-        proc.terminate.assert_called_once()
+        shutdown_process.assert_called_once_with(proc, temp_dir=temp_path)
 
     def test_forward_stdin_to_input_queue_appends_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -278,6 +337,60 @@ class Fm7BasicCliTests(unittest.TestCase):
                 fm7basic_cli._stream_stdin_to_input_queue(input_path)
 
             self.assertEqual(input_path.read_bytes(), b"PRINT 2+2")
+
+    def test_terminate_process_kills_process_group_when_available(self) -> None:
+        proc = mock.Mock()
+        proc.pid = 4321
+        proc.poll.return_value = None
+        proc.wait.return_value = 0
+
+        with (
+            mock.patch("fm7basic_cli.os.getpgid", return_value=4321),
+            mock.patch("fm7basic_cli.os.killpg") as killpg,
+        ):
+            result = fm7basic_cli._terminate_process(proc)
+
+        self.assertEqual(result, 0)
+        killpg.assert_called_once()
+        proc.terminate.assert_not_called()
+
+    def test_shutdown_interactive_process_requests_lua_exit_before_forcing_termination(self) -> None:
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        proc.wait.return_value = 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            with mock.patch.object(fm7basic_cli, "_terminate_process") as terminate_process:
+                result = fm7basic_cli._shutdown_interactive_process(proc, temp_dir=temp_path)
+
+            self.assertEqual(result, 0)
+            self.assertTrue((temp_path / "exit.txt").exists())
+            proc.wait.assert_called_once_with(timeout=1.0)
+            terminate_process.assert_not_called()
+
+    def test_shutdown_interactive_process_falls_back_to_terminate_after_timeout(self) -> None:
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = subprocess.TimeoutExpired(cmd="mame", timeout=1.0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            with mock.patch.object(fm7basic_cli, "_terminate_process", return_value=0) as terminate_process:
+                result = fm7basic_cli._shutdown_interactive_process(proc, temp_dir=temp_path)
+
+            self.assertEqual(result, 0)
+            self.assertTrue((temp_path / "exit.txt").exists())
+            terminate_process.assert_called_once_with(proc)
+
+    def test_fm7_batch_progress_tracks_run_across_scrolled_snapshots(self) -> None:
+        progress = fbasic_batch._FM7BatchProgress()
+
+        self.assertFalse(progress.observe(["READY"]))
+        self.assertFalse(progress.observe(["CBATCHBEGIN"]))
+        self.assertFalse(progress.observe(["RUN"]))
+        self.assertFalse(progress.observe(["30 EQ", "READY"]))
+        self.assertTrue(progress.observe(["RUN", "30 EQ", "READY"]))
 
     def test_startup_filter_drops_known_fm77av_redump_variants(self) -> None:
         startup_filter = fm7basic_cli._StartupOutputFilter(fm7basic_cli._FM77AV_FILTERED_STARTUP_LINES)

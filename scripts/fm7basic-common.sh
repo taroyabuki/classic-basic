@@ -31,9 +31,8 @@ DEFAULT_FM7BASIC_DOWNLOAD_DIR="${CLASSIC_BASIC_FM7_DOWNLOAD_DIR:-${ROOT_DIR}/dow
 DEFAULT_FM7BASIC_MAME_ROMPATH="${DEFAULT_FM7BASIC_DOWNLOAD_DIR}/mame-roms"
 DEFAULT_FM7BASIC_MAME_ROMSET_DIR="${DEFAULT_FM7BASIC_MAME_ROMPATH}/fm7"
 DEFAULT_FM77AV_MAME_ROMSET_DIR="${DEFAULT_FM7BASIC_MAME_ROMPATH}/fm77av"
-DEFAULT_FM7BASIC_NEO_KOBE_ARCHIVE="${CLASSIC_BASIC_FM7_NEO_KOBE_ARCHIVE:-${DEFAULT_FM7BASIC_DOWNLOAD_DIR}/neo-kobe-emulator-pack-2013-08-17.7z}"
-DEFAULT_FM7BASIC_NEO_KOBE_URL="${CLASSIC_BASIC_FM7_NEO_KOBE_URL:-https://archive.org/download/neo-kobe-emulator-pack-2013-08-17.7z/Neo%20Kobe%20emulator%20pack%202013-08-17.7z}"
-DEFAULT_FM7BASIC_NEO_KOBE_VARIANT="${CLASSIC_BASIC_FM7_NEO_KOBE_VARIANT:-Fujitsu FM-7/xm7_3460/Win32}"
+DEFAULT_FM7BASIC_ROM_ARCHIVE="${CLASSIC_BASIC_FM7_ROM_ARCHIVE:-${DEFAULT_FM7BASIC_DOWNLOAD_DIR}/fm7.zip}"
+DEFAULT_FM7BASIC_ROM_URL="${CLASSIC_BASIC_FM7_ROM_URL:-https://archive.org/download/mame-0.221-roms-merged/fm7.zip}"
 
 die() {
   echo "error: $*" >&2
@@ -202,38 +201,38 @@ prepare_fm77av_romset() {
     "${source_dir}/kanji.rom"
 }
 
-extract_fm7basic_assets_from_neo_kobe() {
+extract_fm7basic_assets_from_mame_zip() {
   local source_archive="$1"
   local dest_dir="$2"
-  local variant_dir="${3:-${DEFAULT_FM7BASIC_NEO_KOBE_VARIANT}}"
   local tmpdir
 
-  [[ -f "${source_archive}" ]] || die "Neo Kobe archive not found: ${source_archive}"
-  require_command_path 7z
+  [[ -f "${source_archive}" ]] || die "FM-7 ROM archive not found: ${source_archive}"
+  require_command_path unzip
 
   tmpdir="$(mktemp -d)"
   mkdir -p "${dest_dir}"
-  7z x -y "-o${tmpdir}" "${source_archive}" \
-    "${variant_dir}/FBASIC30.ROM" \
-    "${variant_dir}/BOOT_BAS.ROM" \
-    "${variant_dir}/BOOT_DOS.ROM" \
-    "${variant_dir}/SUBSYS_C.ROM" \
-    "${variant_dir}/KANJI.ROM" \
-    "${variant_dir}/INITIATE.ROM" \
-    "${variant_dir}/SUBSYS_A.ROM" \
-    "${variant_dir}/SUBSYS_B.ROM" \
-    "${variant_dir}/SUBSYSCG.ROM" \
-    "${variant_dir}/KANJI1.ROM" >/dev/null
-  copy_required_asset "${dest_dir}/FBASIC30.ROM" "${tmpdir}/${variant_dir}/FBASIC30.ROM"
-  copy_optional_asset "${dest_dir}/BOOT_BAS.ROM" "${tmpdir}/${variant_dir}/BOOT_BAS.ROM"
-  copy_optional_asset "${dest_dir}/BOOT_DOS.ROM" "${tmpdir}/${variant_dir}/BOOT_DOS.ROM"
-  copy_required_asset "${dest_dir}/SUBSYS_C.ROM" "${tmpdir}/${variant_dir}/SUBSYS_C.ROM"
-  copy_optional_asset "${dest_dir}/KANJI1.ROM" "${tmpdir}/${variant_dir}/KANJI1.ROM"
-  copy_optional_asset "${dest_dir}/KANJI.ROM" "${tmpdir}/${variant_dir}/KANJI.ROM"
-  copy_optional_asset "${dest_dir}/INITIATE.ROM" "${tmpdir}/${variant_dir}/INITIATE.ROM"
-  copy_optional_asset "${dest_dir}/SUBSYS_A.ROM" "${tmpdir}/${variant_dir}/SUBSYS_A.ROM"
-  copy_optional_asset "${dest_dir}/SUBSYS_B.ROM" "${tmpdir}/${variant_dir}/SUBSYS_B.ROM"
-  copy_optional_asset "${dest_dir}/SUBSYSCG.ROM" "${tmpdir}/${variant_dir}/SUBSYSCG.ROM"
+  unzip -oq "${source_archive}" \
+    "boot_bas.rom" \
+    "boot_dos_a.rom" \
+    "fbasic300.rom" \
+    "subsys_c.rom" \
+    "kanji.rom" \
+    "fm7740sx/initiate.rom" \
+    "fm7740sx/fbasic30.rom" \
+    "fm7740sx/subsys_a.rom" \
+    "fm7740sx/subsys_b.rom" \
+    "fm7740sx/subsyscg.rom" \
+    -d "${tmpdir}"
+  copy_required_asset "${dest_dir}/FBASIC30.ROM" "${tmpdir}/fm7740sx/fbasic30.rom"
+  copy_optional_asset "${dest_dir}/BOOT_BAS.ROM" "${tmpdir}/boot_bas.rom"
+  copy_optional_asset "${dest_dir}/BOOT_DOS.ROM" "${tmpdir}/boot_dos_a.rom"
+  copy_required_asset "${dest_dir}/SUBSYS_C.ROM" "${tmpdir}/subsys_c.rom"
+  copy_optional_asset "${dest_dir}/KANJI1.ROM" "${tmpdir}/kanji.rom"
+  copy_optional_asset "${dest_dir}/KANJI.ROM" "${tmpdir}/kanji.rom"
+  copy_optional_asset "${dest_dir}/INITIATE.ROM" "${tmpdir}/fm7740sx/initiate.rom"
+  copy_optional_asset "${dest_dir}/SUBSYS_A.ROM" "${tmpdir}/fm7740sx/subsys_a.rom"
+  copy_optional_asset "${dest_dir}/SUBSYS_B.ROM" "${tmpdir}/fm7740sx/subsys_b.rom"
+  copy_optional_asset "${dest_dir}/SUBSYSCG.ROM" "${tmpdir}/fm7740sx/subsyscg.rom"
   rm -rf "${tmpdir}"
 }
 

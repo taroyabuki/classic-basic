@@ -136,6 +136,72 @@ class Basic80RunnerTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0)
             self.assertIn(b"BASIC-85", output)
 
+    def test_plain_interactive_launch_hides_exit_sequence_noise_on_ctrl_d(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            _copy_repo_files(
+                temp_path,
+                [
+                    "run/basic80.sh",
+                    "scripts/basic-file-common.sh",
+                    "scripts/runcpm-common.sh",
+                    "src/basic80_interactive.py",
+                    "src/runcpm_batch_exit.py",
+                ],
+            )
+            _prepare_fake_runcpm_tree(temp_path)
+            self._write_interactive_fake_runcpm(temp_path / "third_party/RunCPM/RunCPM/RunCPM")
+
+            bin_dir = temp_path / "bin"
+            _write_executable(bin_dir / "make", "#!/usr/bin/env bash\nexit 0\n")
+
+            runtime_dir = temp_path / "runtime"
+            mbasic_path = temp_path / "MBASIC.COM"
+            mbasic_path.write_bytes(b"mbasic")
+
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            env["PYTHONPATH"] = str(temp_path / "src")
+
+            proc, master_fd = self._spawn_pty(
+                env=env,
+                args=[
+                    "bash",
+                    "run/basic80.sh",
+                    "--runtime",
+                    str(runtime_dir),
+                    "--mbasic",
+                    str(mbasic_path),
+                ],
+                cwd=temp_path,
+            )
+
+            try:
+                output = _read_until(master_fd, b"BASIC-85", timeout=10)
+                os.write(master_fd, b"\x04")
+                proc.wait(timeout=10)
+                while True:
+                    ready, _, _ = select.select([master_fd], [], [], 0.1)
+                    if not ready:
+                        break
+                    try:
+                        chunk = os.read(master_fd, 4096)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    output += chunk
+            finally:
+                os.close(master_fd)
+                if proc.poll() is None:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    proc.wait(timeout=10)
+
+            self.assertEqual(proc.returncode, 0)
+            self.assertNotIn(b"A>", output)
+            self.assertNotIn(b"SYSTEM", output)
+            self.assertNotIn(b"EXIT", output)
+
     def test_file_flag_loaded_interactive_launch_exits_on_ctrl_d(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
@@ -196,6 +262,72 @@ class Basic80RunnerTests(unittest.TestCase):
                 (runtime_dir / "A/0/RUNFILE.BAS").read_bytes(),
                 b"10 PRINT 1\r\n20 END\r\n",
             )
+
+    def test_plain_interactive_launch_forces_exit_when_backend_ignores_ctrl_d(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            _copy_repo_files(
+                temp_path,
+                [
+                    "run/basic80.sh",
+                    "scripts/basic-file-common.sh",
+                    "scripts/runcpm-common.sh",
+                    "src/basic80_interactive.py",
+                    "src/runcpm_batch_exit.py",
+                ],
+            )
+            _prepare_fake_runcpm_tree(temp_path)
+            _write_executable(
+                temp_path / "third_party/RunCPM/RunCPM/RunCPM",
+                """#!/usr/bin/env python3
+import signal
+import sys
+import time
+
+sys.stdout.write("BASIC-85 Rev. 5.29 [CP/M Version]\\r\\nOk\\r\\n")
+sys.stdout.flush()
+signal.signal(signal.SIGTERM, lambda *_args: sys.exit(0))
+while True:
+    time.sleep(1.0)
+""",
+            )
+
+            bin_dir = temp_path / "bin"
+            _write_executable(bin_dir / "make", "#!/usr/bin/env bash\nexit 0\n")
+
+            runtime_dir = temp_path / "runtime"
+            mbasic_path = temp_path / "MBASIC.COM"
+            mbasic_path.write_bytes(b"mbasic")
+
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            env["PYTHONPATH"] = str(temp_path / "src")
+
+            proc, master_fd = self._spawn_pty(
+                env=env,
+                args=[
+                    "bash",
+                    "run/basic80.sh",
+                    "--runtime",
+                    str(runtime_dir),
+                    "--mbasic",
+                    str(mbasic_path),
+                ],
+                cwd=temp_path,
+            )
+
+            try:
+                output = _read_until(master_fd, b"BASIC-85", timeout=10)
+                os.write(master_fd, b"\x04")
+                proc.wait(timeout=10)
+            finally:
+                os.close(master_fd)
+                if proc.poll() is None:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    proc.wait(timeout=10)
+
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn(b"BASIC-85", output)
 
     def test_file_flag_loads_program_interactively(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

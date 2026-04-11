@@ -14,16 +14,15 @@ Usage:
 What it does:
   1. Ensures MAME is installed, using apt when available
   2. Prepares a MAME fm77av ROM set in downloads/fm7basic/mame-roms/fm77av
-  3. If the ROMs are missing, downloads the Neo Kobe emulator pack and extracts
-     the FM-77AV-compatible XM7 ROM files first
+  3. If the ROMs are missing, downloads fm7.zip and extracts
+     the FM-77AV-compatible ROM files first
   4. Verifies the prepared ROM set against the local MAME build
 
 Default source directory:
   ${DEFAULT_FM7BASIC_SOURCE_DIR}
 
-Neo Kobe source:
-  ${DEFAULT_FM7BASIC_NEO_KOBE_URL}
-  variant: ${DEFAULT_FM7BASIC_NEO_KOBE_VARIANT}
+ROM source:
+  ${DEFAULT_FM7BASIC_ROM_URL}
 EOF
 }
 
@@ -47,20 +46,21 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ! -f "${rom_dir}/FBASIC30.ROM" || ! -f "${rom_dir}/INITIATE.ROM" || ! -f "${rom_dir}/SUBSYS_A.ROM" || ! -f "${rom_dir}/SUBSYS_B.ROM" || ! -f "${rom_dir}/SUBSYS_C.ROM" || ! -f "${rom_dir}/SUBSYSCG.ROM" ]]; then
-  if [[ ! -f "${DEFAULT_FM7BASIC_NEO_KOBE_ARCHIVE}" ]]; then
-    download_file "${DEFAULT_FM7BASIC_NEO_KOBE_URL}" "${DEFAULT_FM7BASIC_NEO_KOBE_ARCHIVE}"
+  require_command_path unzip
+  if [[ ! -f "${DEFAULT_FM7BASIC_ROM_ARCHIVE}" ]]; then
+    download_file "${DEFAULT_FM7BASIC_ROM_URL}" "${DEFAULT_FM7BASIC_ROM_ARCHIVE}"
   fi
-  extract_fm7basic_assets_from_neo_kobe "${DEFAULT_FM7BASIC_NEO_KOBE_ARCHIVE}" "${rom_dir}"
+  extract_fm7basic_assets_from_mame_zip "${DEFAULT_FM7BASIC_ROM_ARCHIVE}" "${rom_dir}"
 fi
 
 ensure_mame_with_apt || require_mame
 prepare_fm77av_romset "${rom_dir}" "${DEFAULT_FM77AV_MAME_ROMSET_DIR}"
 if ! mame_verify_romset fm77av; then
   if [[ "${rom_dir}" == "${DEFAULT_FM7BASIC_SOURCE_DIR}" ]]; then
-    if [[ ! -f "${DEFAULT_FM7BASIC_NEO_KOBE_ARCHIVE}" ]]; then
-      download_file "${DEFAULT_FM7BASIC_NEO_KOBE_URL}" "${DEFAULT_FM7BASIC_NEO_KOBE_ARCHIVE}"
+    if [[ ! -f "${DEFAULT_FM7BASIC_ROM_ARCHIVE}" ]]; then
+      download_file "${DEFAULT_FM7BASIC_ROM_URL}" "${DEFAULT_FM7BASIC_ROM_ARCHIVE}"
     fi
-    extract_fm7basic_assets_from_neo_kobe "${DEFAULT_FM7BASIC_NEO_KOBE_ARCHIVE}" "${rom_dir}"
+    extract_fm7basic_assets_from_mame_zip "${DEFAULT_FM7BASIC_ROM_ARCHIVE}" "${rom_dir}"
     prepare_fm77av_romset "${rom_dir}" "${DEFAULT_FM77AV_MAME_ROMSET_DIR}"
   fi
   verify_mame_romset fm77av

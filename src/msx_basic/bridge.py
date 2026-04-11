@@ -158,7 +158,15 @@ class OpenMSXBridge:
             except ValueError:
                 cursor_row = 0
         lines = screen_raw.split("\n") if screen_raw else []
-        result = [line.rstrip() for line in lines[:24]]
+        active_rows = {cursor_row}
+        if cursor_row > 0:
+            active_rows.add(cursor_row - 1)
+        result: list[str] = []
+        for row, line in enumerate(lines[:24]):
+            if row in active_rows:
+                result.append(line)
+            else:
+                result.append(line.rstrip())
         while len(result) < 24:
             result.append("")
         return result, cursor_row
