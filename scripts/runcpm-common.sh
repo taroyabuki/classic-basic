@@ -86,7 +86,18 @@ vendor_runcpm() {
 
 build_runcpm() {
   ensure_upstream
-  (cd "${BUILD_DIR}" && make posix build)
+  if [[ "${CLASSIC_BASIC_QUIET_SETUP:-}" == "1" ]]; then
+    local build_log
+    build_log="$(mktemp)"
+    if ! (cd "${BUILD_DIR}" && make posix build) >"${build_log}" 2>&1; then
+      cat "${build_log}" >&2
+      rm -f "${build_log}"
+      return 1
+    fi
+    rm -f "${build_log}"
+  else
+    (cd "${BUILD_DIR}" && make posix build)
+  fi
   [[ -x "${BUILD_DIR}/RunCPM" ]] || die "RunCPM build did not produce an executable"
 }
 
@@ -155,13 +166,15 @@ prepare_runtime() {
     rm -f "${runtime_dir}/AUTOEXEC.TXT"
   fi
 
-  echo "Prepared RunCPM runtime at ${runtime_dir}" >&2
-  echo "Drive A user 0: ${runtime_dir}/A/0" >&2
-  if [[ -n "${copied_program}" ]]; then
-    echo "Copied program: ${copied_program}" >&2
-  fi
-  if [[ -n "${autoexec_command}" ]]; then
-    echo "AUTOEXEC: ${autoexec_command}" >&2
+  if [[ "${CLASSIC_BASIC_QUIET_SETUP:-}" != "1" ]]; then
+    echo "Prepared RunCPM runtime at ${runtime_dir}" >&2
+    echo "Drive A user 0: ${runtime_dir}/A/0" >&2
+    if [[ -n "${copied_program}" ]]; then
+      echo "Copied program: ${copied_program}" >&2
+    fi
+    if [[ -n "${autoexec_command}" ]]; then
+      echo "AUTOEXEC: ${autoexec_command}" >&2
+    fi
   fi
 }
 

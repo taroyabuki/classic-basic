@@ -12,7 +12,9 @@ import os
 import random
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -61,6 +63,21 @@ _SOURCE_LISTING_KEYWORDS = (
 
 class UnsupportedProgramInputError(RuntimeError):
     """Raised when batch execution appears to block on BASIC program input."""
+
+
+def _parent_death_preexec_fn() -> Callable[[], None] | None:
+    if not sys.platform.startswith("linux"):
+        return None
+
+    def _set_parent_death_signal() -> None:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
+            err = ctypes.get_errno()
+            raise OSError(err, os.strerror(err))
+
+    return _set_parent_death_signal
 
 
 def parse_timeout_spec(spec: str | None) -> float | None:
@@ -562,6 +579,8 @@ def _run_fm7_batch_capture(
         lua_path=lua_path,
         extra_mame_args=extra_mame_args,
         headless=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     try:
         return _wait_for_fm7_snapshot(
@@ -1209,7 +1228,14 @@ def launch_mame(
         command.extend(["-autoboot_script", str(lua_path)])
     if not effective_headless and not env.get("DISPLAY") and shutil.which("xvfb-run") is not None:
         command = ["xvfb-run", "-a", *command]
-    return subprocess.Popen(command, env=env, stdout=stdout, stderr=stderr, start_new_session=True)
+    return subprocess.Popen(
+        command,
+        env=env,
+        stdout=stdout,
+        stderr=stderr,
+        start_new_session=True,
+        preexec_fn=_parent_death_preexec_fn(),
+    )
 
 
 def _pick_xvfb_display() -> str:

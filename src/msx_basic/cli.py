@@ -129,8 +129,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.run_loaded and args.program is not None:
             return run_loaded_batch(bridge, args.program)
         if args.interactive and args.program is not None:
-            run_load(bridge, args.program)
-            run_interactive(bridge)
+            loaded_program_lines = run_load(bridge, args.program)
+            run_interactive(bridge, loaded_program_lines=loaded_program_lines)
         elif args.program is not None:
             return run_batch(bridge, args.program)
         else:

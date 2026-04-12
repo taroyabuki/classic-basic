@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import sys
 from collections import deque
@@ -43,9 +44,15 @@ class OsiBasicResult:
 
 
 class SessionConsole:
-    def __init__(self, staged_input: bytes = b"", terminal: RawTerminal | None = None) -> None:
+    def __init__(
+        self,
+        staged_input: bytes = b"",
+        terminal: RawTerminal | None = None,
+        output_buffer: io.BytesIO | None = None,
+    ) -> None:
         self._buffer = deque(staged_input)
         self._terminal = terminal
+        self._output_buffer = output_buffer
         self._rubout_pending = False
 
     def read_byte(self) -> int:
@@ -74,6 +81,10 @@ class SessionConsole:
                 return
             self._rubout_pending = False
             self._terminal.write_byte(byte_value)
+            return
+
+        if self._output_buffer is not None:
+            self._output_buffer.write(bytes([byte_value]))
             return
 
         os.write(sys.stdout.fileno(), bytes([byte_value]))
@@ -248,6 +259,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _filter_file_run_output(text: str) -> str:
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    run_index = None
+    for index, line in enumerate(lines):
+        if line.strip() == "RUN":
+            run_index = index
+    if run_index is None:
+        return text
+
+    output_lines = lines[run_index + 1 :]
+    output_lines = [line.rstrip() for line in output_lines if line.strip()]
+    if output_lines and output_lines[-1].strip() == "OK":
+        output_lines.pop()
+    if not output_lines:
+        return ""
+    return "\n".join(output_lines) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -265,12 +294,16 @@ def main(argv: list[str] | None = None) -> int:
     stdin_bytes = b""
     terminal: RawTerminal | None = None
     terminal_manager: RawTerminal | None = None
+    batch_output: io.BytesIO | None = None
 
     if use_terminal:
         terminal_manager = RawTerminal()
         terminal = terminal_manager.__enter__()
     elif not sys.stdin.isatty():
         stdin_bytes = sys.stdin.buffer.read()
+
+    if args.program is not None and not args.interactive and args.exec_text is None:
+        batch_output = io.BytesIO()
 
     try:
         console = SessionConsole(
@@ -283,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
                 run=not args.interactive,
             ),
             terminal=terminal,
+            output_buffer=batch_output,
         )
         result = OsiBasicMachine(args.rom).run(console=console, max_steps=args.max_steps)
     except (FileNotFoundError, UnsupportedMonitorCall, ValueError) as exc:
@@ -298,6 +332,12 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    if batch_output is not None:
+        filtered = _filter_file_run_output(batch_output.getvalue().decode("ascii", errors="replace"))
+        if filtered:
+            sys.stdout.write(filtered)
+            sys.stdout.flush()
 
     return 0
 

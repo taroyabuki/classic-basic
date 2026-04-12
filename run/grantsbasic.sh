@@ -9,14 +9,16 @@ usage() {
   cat <<USAGE
 Usage:
   $USAGE_NAME [--rom PATH] [--max-steps N] [--boot-step-budget N] [--prompt-step-budget N]
+  $USAGE_NAME [--rom PATH] [--max-steps N] [--boot-step-budget N] [--prompt-step-budget N] -f PROGRAM.bas
   $USAGE_NAME [--rom PATH] [--max-steps N] [--boot-step-budget N] [--prompt-step-budget N] --file PROGRAM.bas
+  $USAGE_NAME [--rom PATH] [--max-steps N] [--boot-step-budget N] [--prompt-step-budget N] -r -f PROGRAM.bas [--timeout SECONDS]
   $USAGE_NAME [--rom PATH] [--max-steps N] [--boot-step-budget N] [--prompt-step-budget N] --run --file PROGRAM.bas [--timeout SECONDS]
 
 What it does:
   - Runs Grant Searle's Z80 SBC ROM BASIC in a terminal.
   - Without --run, interactive mode exits on Ctrl-D.
-  - With --file PROGRAM.bas, uploads the program line-by-line and stays interactive.
-  - With --run --file PROGRAM.bas, uploads the program, RUNs it, and exits.
+  - With -f/--file PROGRAM.bas, uploads the program line-by-line and stays interactive.
+  - With -r/--run -f/--file PROGRAM.bas, uploads the program, RUNs it, and exits.
 USAGE
 }
 

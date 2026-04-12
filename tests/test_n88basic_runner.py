@@ -119,6 +119,37 @@ class N88BasicRunnerTests(unittest.TestCase):
                 f"-m n88basic_cli --file {program}",
             )
 
+    def test_short_file_flag_loads_program_interactively(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            bin_dir = temp_path / "bin"
+            bin_dir.mkdir()
+            log_path = temp_path / "python3.log"
+            _write_executable(
+                bin_dir / "python3",
+                f"""#!/usr/bin/env bash
+                set -euo pipefail
+                printf '%s\\n' "$*" >"{log_path}"
+                """,
+            )
+            program = temp_path / "prog.bas"
+            program.write_text("10 PRINT 42\n", encoding="ascii")
+
+            result = subprocess.run(
+                ["bash", str(RUNNER), "-f", str(program)],
+                cwd=ROOT_DIR,
+                env=self._runtime_env(bin_dir),
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                log_path.read_text(encoding="ascii").strip(),
+                f"-m n88basic_cli --file {program}",
+            )
+
     def test_run_flag_executes_program_in_batch_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
@@ -137,6 +168,37 @@ class N88BasicRunnerTests(unittest.TestCase):
 
             result = subprocess.run(
                 ["bash", str(RUNNER), "--run", "--file", str(program)],
+                cwd=ROOT_DIR,
+                env=self._runtime_env(bin_dir),
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                log_path.read_text(encoding="ascii").strip(),
+                f"-m n88basic_cli --run --file {program}",
+            )
+
+    def test_short_run_flag_executes_program_in_batch_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            bin_dir = temp_path / "bin"
+            bin_dir.mkdir()
+            log_path = temp_path / "python3.log"
+            _write_executable(
+                bin_dir / "python3",
+                f"""#!/usr/bin/env bash
+                set -euo pipefail
+                printf '%s\\n' "$*" >"{log_path}"
+                """,
+            )
+            program = temp_path / "prog.bas"
+            program.write_text("10 PRINT 42\n", encoding="ascii")
+
+            result = subprocess.run(
+                ["bash", str(RUNNER), "-r", "-f", str(program)],
                 cwd=ROOT_DIR,
                 env=self._runtime_env(bin_dir),
                 capture_output=True,
@@ -626,6 +688,20 @@ class N88BasicRunnerTests(unittest.TestCase):
             cli._emit_startup_screen_snapshot()
 
         self.assertEqual(stdout.getvalue(), "NEC N-88 BASIC Version 2.3\r\nOk\r\n")
+
+    def test_startup_screen_snapshot_includes_preloaded_program_listing(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        cli = N88BasicCLI()
+        cli._preloaded_program_lines = ["10 A=10", "20 PRINT A"]
+        cli._startup_screen_snapshot = ["NEC N-88 BASIC Version 2.3", "Ok"]
+        stdout = io.StringIO()
+
+        with patch("sys.stdout", stdout):
+            cli._emit_startup_screen_snapshot()
+
+        self.assertEqual(stdout.getvalue(), "NEC N-88 BASIC Version 2.3\r\nOk\r\n10 A=10\r\n20 PRINT A\r\n")
+        self.assertEqual(cli._last_rendered_screen_lines, ["NEC N-88 BASIC Version 2.3", "Ok"])
 
     def test_interactive_launch_keeps_prompt_and_next_input_at_column_zero(self) -> None:
         rom_dir = ROOT_DIR / "downloads" / "n88basic" / "roms"

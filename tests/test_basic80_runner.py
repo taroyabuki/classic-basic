@@ -247,7 +247,7 @@ class Basic80RunnerTests(unittest.TestCase):
             )
 
             try:
-                output = _read_until(master_fd, b'LOADED RUNFILE.BAS', timeout=10)
+                output = _read_until(master_fd, b"20 END", timeout=10)
                 os.write(master_fd, b"\x04")
                 proc.wait(timeout=10)
             finally:
@@ -258,6 +258,8 @@ class Basic80RunnerTests(unittest.TestCase):
 
             self.assertEqual(proc.returncode, 0)
             self.assertIn(b"LOADED RUNFILE.BAS", output)
+            self.assertIn(b"10 PRINT 1", output)
+            self.assertIn(b"20 END", output)
             self.assertEqual(
                 (runtime_dir / "A/0/RUNFILE.BAS").read_bytes(),
                 b"10 PRINT 1\r\n20 END\r\n",
@@ -380,7 +382,64 @@ while True:
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(autoexec_log.read_text(encoding="ascii"), "MBASIC\n")
-            self.assertEqual(stdin_log.read_bytes(), b'LOAD "RUNFILE.BAS"\rRUN\r')
+            self.assertEqual(stdin_log.read_bytes(), b'LOAD "RUNFILE.BAS"\rLIST\rRUN\r')
+            self.assertEqual(
+                (runtime_dir / "A/0/RUNFILE.BAS").read_bytes(),
+                b"10 PRINT 1\r\n20 END\r\n",
+            )
+
+    def test_short_file_flag_loads_program_interactively(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            _copy_repo_files(
+                temp_path,
+                [
+                    "run/basic80.sh",
+                    "scripts/basic-file-common.sh",
+                    "scripts/runcpm-common.sh",
+                    "src/runcpm_batch_exit.py",
+                ],
+            )
+            _prepare_fake_runcpm_tree(temp_path)
+
+            bin_dir = temp_path / "bin"
+            _write_executable(bin_dir / "make", "#!/usr/bin/env bash\nexit 0\n")
+
+            runtime_dir = temp_path / "runtime"
+            mbasic_path = temp_path / "MBASIC.COM"
+            mbasic_path.write_bytes(b"mbasic")
+            program_path = temp_path / "prog.bas"
+            program_path.write_bytes(b"10 PRINT 1\r20 END\r")
+            stdin_log = temp_path / "stdin.log"
+            autoexec_log = temp_path / "autoexec.log"
+
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            env["RUNCPM_STDIN_LOG"] = str(stdin_log)
+            env["RUNCPM_AUTOEXEC_LOG"] = str(autoexec_log)
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    "run/basic80.sh",
+                    "--runtime",
+                    str(runtime_dir),
+                    "--mbasic",
+                    str(mbasic_path),
+                    "-f",
+                    str(program_path),
+                ],
+                cwd=temp_path,
+                env=env,
+                input="RUN\r",
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(autoexec_log.read_text(encoding="ascii"), "MBASIC\n")
+            self.assertEqual(stdin_log.read_bytes(), b'LOAD "RUNFILE.BAS"\rLIST\rRUN\r')
             self.assertEqual(
                 (runtime_dir / "A/0/RUNFILE.BAS").read_bytes(),
                 b"10 PRINT 1\r\n20 END\r\n",
@@ -505,9 +564,88 @@ while True:
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, "PRINT OUTPUT\n")
+            self.assertEqual(result.stderr, "")
             self.assertEqual(
                 batch_log.read_text(encoding="ascii").strip(),
-                f"{temp_path / 'src/runcpm_batch_exit.py'} --runtime {runtime_dir}",
+                (
+                    f"{temp_path / 'src/runcpm_batch_exit.py'} --runtime {runtime_dir} "
+                    "--intermediate-prompt Ok --intermediate-command SYSTEM --output-filter basic80"
+                ),
+            )
+            self.assertEqual(
+                autoexec_log.read_text(encoding="ascii"),
+                "MBASIC RUNFILE.BAS\n",
+            )
+
+    def test_short_run_flag_uses_batch_exit_and_prints_stdout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            _copy_repo_files(
+                temp_path,
+                [
+                    "run/basic80.sh",
+                    "scripts/basic-file-common.sh",
+                    "scripts/runcpm-common.sh",
+                    "src/runcpm_batch_exit.py",
+                ],
+            )
+            _prepare_fake_runcpm_tree(temp_path)
+
+            bin_dir = temp_path / "bin"
+            _write_executable(bin_dir / "make", "#!/usr/bin/env bash\nexit 0\n")
+            batch_log = temp_path / "python3.log"
+            autoexec_log = temp_path / "autoexec.log"
+            _write_executable(
+                bin_dir / "python3",
+                f"""#!/usr/bin/env bash
+                set -euo pipefail
+                if [[ "${{1:-}}" == "{temp_path / 'src/runcpm_batch_exit.py'}" ]]; then
+                  printf '%s\\n' "$*" >"{batch_log}"
+                  cat "$3/AUTOEXEC.TXT" >"{autoexec_log}"
+                  printf 'PRINT OUTPUT\\n'
+                  exit 0
+                fi
+                exec /usr/bin/python3 "$@"
+                """,
+            )
+
+            runtime_dir = temp_path / "runtime"
+            mbasic_path = temp_path / "MBASIC.COM"
+            mbasic_path.write_bytes(b"mbasic")
+            program_path = temp_path / "prog.bas"
+            program_path.write_text("10 PRINT 42\n20 END\n", encoding="ascii")
+
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    "run/basic80.sh",
+                    "--runtime",
+                    str(runtime_dir),
+                    "--mbasic",
+                    str(mbasic_path),
+                    "-r",
+                    "-f",
+                    str(program_path),
+                ],
+                cwd=temp_path,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "PRINT OUTPUT\n")
+            self.assertEqual(result.stderr, "")
+            self.assertEqual(
+                batch_log.read_text(encoding="ascii").strip(),
+                (
+                    f"{temp_path / 'src/runcpm_batch_exit.py'} --runtime {runtime_dir} "
+                    "--intermediate-prompt Ok --intermediate-command SYSTEM --output-filter basic80"
+                ),
             )
             self.assertEqual(
                 autoexec_log.read_text(encoding="ascii"),
@@ -564,6 +702,13 @@ try:
         upper = bytes(buffer).upper()
         if in_basic and b'LOAD "RUNFILE.BAS"\\r' in upper:
             sys.stdout.write("LOADED RUNFILE.BAS\\r\\nOk\\r\\n")
+            sys.stdout.flush()
+            buffer.clear()
+        elif in_basic and b"LIST\\r" in upper:
+            with open("A/0/RUNFILE.BAS", "r", encoding="ascii") as handle:
+                for raw_line in handle:
+                    sys.stdout.write(raw_line.replace("\\n", "\\r\\n"))
+            sys.stdout.write("Ok\\r\\n")
             sys.stdout.flush()
             buffer.clear()
         elif in_basic and b"SYSTEM\\r" in upper:

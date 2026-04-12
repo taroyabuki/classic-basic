@@ -93,9 +93,11 @@ prepare_qbasic_runtime() {
   chmod 777 "${runtime_dir}" "${runtime_dir}/drive_c" "${home_dir}" "${home_dir}/.dosemu" "${home_dir}/.config" "${home_dir}/.config/pulse"
   prepare_dosemu_home "${home_dir}"
 
-  echo "Prepared QBasic runtime at ${runtime_dir}" >&2
-  echo "Prepared dosemu HOME at ${home_dir}" >&2
-  echo "QBasic executable: ${exe_path}" >&2
+  if [[ "${CLASSIC_BASIC_QUIET_SETUP:-}" != "1" ]]; then
+    echo "Prepared QBasic runtime at ${runtime_dir}" >&2
+    echo "Prepared dosemu HOME at ${home_dir}" >&2
+    echo "QBasic executable: ${exe_path}" >&2
+  fi
 }
 
 stage_qbasic_program() {
@@ -223,12 +225,7 @@ run_qbasic_file() {
 
   local terminal_output
   terminal_output="$(mktemp)"
-  if dosemu_batch_use_pty; then
-    run_dosemu_in_pty "${timeout_spec}" "${runtime_dir}/dosemu.log" "${full_cmd[@]}" || status=$?
-    rm -f "${terminal_output}"
-    terminal_output=""
-  else
-    # Raise nproc limit: dosemu2.bin spawns ~20 threads; if RLIMIT_NPROC is
+  # Raise nproc limit: dosemu2.bin spawns ~20 threads; if RLIMIT_NPROC is
     # tight the clone() syscall fails and dosemu2 deadlocks on a futex.
     ulimit -u unlimited 2>/dev/null || true
     # Watchdog approach: run dosemu in background, poll for CBATCH.TXT, then
@@ -293,8 +290,6 @@ run_qbasic_file() {
         echo "diagnostic info appended to ${runtime_dir}/dosemu.log" >&2
       fi
     fi
-  fi
-
   if [[ -f "${capture_path}" ]] && [[ -s "${capture_path}" ]]; then
     python3 "${ROOT_DIR}/src/dos_batch_filter.py" <"${capture_path}"
   else

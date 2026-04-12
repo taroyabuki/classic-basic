@@ -161,7 +161,10 @@ class QBasicInteractiveTests(unittest.TestCase):
                     proc.wait(timeout=10)
 
             self.assertEqual(proc.returncode, 0)
+            self.assertLess(startup.find(b"QBasic text shell."), startup.find(b"Loaded 2 line(s)"))
             self.assertIn(b"Loaded 2 line(s)", startup)
+            self.assertIn(b'10 PRINT "HELLO"', startup)
+            self.assertIn(b"20 END", startup)
             self.assertIn(b"PROGRAM OUTPUT", output)
             self.assertNotIn(b"Welcome to MS-DOS QBasic", output)
             self.assertEqual(

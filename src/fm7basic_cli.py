@@ -28,6 +28,7 @@ _FM77AV_FILTERED_STARTUP_LINES = frozenset(
         "WARNING: the machine might not run correctly.",
     }
 )
+_IGNORED_RUNTIME_LINES = ("Average speed:",)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -103,6 +104,8 @@ class _StartupOutputFilter:
     def should_emit(self, line: bytes) -> bool:
         normalized = line.rstrip(b"\r\n").decode("utf-8", errors="replace")
         with self._lock:
+            if any(normalized.startswith(prefix) for prefix in _IGNORED_RUNTIME_LINES):
+                return False
             if self._passthrough:
                 return True
             if normalized in self._remaining_lines:
@@ -125,7 +128,10 @@ class _ConsoleEchoFilter:
     def _normalize_text(text: str) -> str:
         return text.strip().upper()
 
-    def record_input(self, line: bytes) -> None:
+    def record_input(self, line: bytes, *, suppress_echo: bool | None = None) -> None:
+        should_suppress = self._suppress_terminal_echo if suppress_echo is None else suppress_echo
+        if not should_suppress:
+            return
         normalized = line.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
         for raw_line in normalized.split("\n"):
             text = self._normalize_text(raw_line)
@@ -135,11 +141,10 @@ class _ConsoleEchoFilter:
                 self._pending_inputs.append(text)
 
     def filter_lines(self, lines: list[str]) -> list[str]:
-        if not self._suppress_terminal_echo:
-            return lines
-
         filtered: list[str] = []
         with self._lock:
+            if not self._suppress_terminal_echo and not self._pending_inputs and self._active_input is None:
+                return lines
             for line in lines:
                 text = self._normalize_text(line)
                 if text and self._active_input is not None:
@@ -158,10 +163,57 @@ class _ConsoleEchoFilter:
         return filtered
 
 
+def _prime_console_echo_filter_for_file_load(
+    console_echo_filter: _ConsoleEchoFilter,
+    file_path: Path | None,
+) -> None:
+    if file_path is None:
+        return
+    initial_lines = fbasic_batch.normalize_program_lines(file_path)
+    if not initial_lines:
+        return
+    console_echo_filter.record_input(
+        "".join(f"{line}\n" for line in initial_lines).encode("ascii"),
+        suppress_echo=True,
+    )
+
+
+def _emit_loaded_program_listing(file_path: Path | None) -> None:
+    if file_path is None:
+        return
+    for line in fbasic_batch.normalize_program_lines(file_path):
+        sys.stdout.write(f"{line}\n")
+    sys.stdout.flush()
+
+
+def _wait_for_gui_ready_output(startup_ready_event: threading.Event, *, timeout: float = 5.0) -> None:
+    startup_ready_event.wait(timeout=timeout)
+
+
+def _wait_for_headless_ready_output(output_path: Path, *, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    previous_lines: list[str] | None = None
+    stable_ready_polls = 0
+    while time.monotonic() < deadline:
+        current_lines = fbasic_batch._read_text_capture_lines(output_path)
+        if _snapshot_looks_stable(current_lines):
+            if current_lines == previous_lines:
+                stable_ready_polls += 1
+            else:
+                stable_ready_polls = 1
+            if stable_ready_polls >= 2:
+                return
+        else:
+            stable_ready_polls = 0
+        previous_lines = current_lines
+        time.sleep(0.1)
+
+
 def _copy_stream(
     source: BinaryIO | None,
     sink: BinaryIO,
     startup_filter: _StartupOutputFilter | None = None,
+    startup_ready_event: threading.Event | None = None,
 ) -> threading.Thread | None:
     if source is None:
         return None
@@ -176,6 +228,8 @@ def _copy_stream(
                     continue
                 sink.write(line)
                 sink.flush()
+                if startup_ready_event is not None and line.decode("utf-8", errors="replace").strip().lower() == "ready":
+                    startup_ready_event.set()
         finally:
             source.close()
 
@@ -191,6 +245,7 @@ def _launch_interactive_session(
     driver: str,
     file_path: Path | None,
     extra_mame_args: list[str],
+    startup_ready_event: threading.Event | None = None,
 ) -> tuple[subprocess.Popen[bytes], Path | None]:
     startup_filter = None
     stdout = None
@@ -216,8 +271,8 @@ def _launch_interactive_session(
         stderr=stderr,
     )
 
-    stdout_thread = _copy_stream(proc.stdout, sys.stdout.buffer, startup_filter)
-    stderr_thread = _copy_stream(proc.stderr, sys.stderr.buffer, startup_filter)
+    stdout_thread = _copy_stream(proc.stdout, sys.stdout.buffer, startup_filter, startup_ready_event)
+    stderr_thread = _copy_stream(proc.stderr, sys.stderr.buffer, startup_filter, startup_ready_event)
     proc._classic_basic_io_threads = tuple(thread for thread in (stdout_thread, stderr_thread) if thread is not None)
     return proc, temp_dir, input_path
 
@@ -338,6 +393,7 @@ def run_interactive_session(
     proc: subprocess.Popen[bytes] | None = None
     temp_dir: Path | None = None
     input_path: Path | None = None
+    startup_ready_event = threading.Event()
     try:
         proc, temp_dir, input_path = _launch_interactive_session(
             mame_command=mame_command,
@@ -345,7 +401,10 @@ def run_interactive_session(
             driver=driver,
             file_path=file_path,
             extra_mame_args=extra_mame_args,
+            startup_ready_event=startup_ready_event,
         )
+        _wait_for_gui_ready_output(startup_ready_event)
+        _emit_loaded_program_listing(file_path)
         try:
             _forward_stdin_to_input_queue(input_path)
         except KeyboardInterrupt:
@@ -373,6 +432,7 @@ def run_headless_interactive_session(
     console_echo_filter = _ConsoleEchoFilter(
         suppress_terminal_echo=bool(getattr(sys.stdin, "isatty", lambda: False)())
     )
+    _prime_console_echo_filter_for_file_load(console_echo_filter, file_path)
     try:
         startup_filter = None
         stdout = None
@@ -406,6 +466,8 @@ def run_headless_interactive_session(
             for thread in (stdout_thread, stderr_thread, console_thread)
             if thread is not None
         )
+        _wait_for_headless_ready_output(output_path)
+        _emit_loaded_program_listing(file_path)
         try:
             _forward_stdin_to_input_queue(input_path, console_echo_filter)
         except KeyboardInterrupt:

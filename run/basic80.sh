@@ -86,6 +86,10 @@ if [[ -n "${timeout_spec}" && "${run_program}" != "1" ]]; then
   die "--timeout requires --run --file PROGRAM.bas"
 fi
 
+if [[ "${run_program}" == "1" ]]; then
+  export CLASSIC_BASIC_QUIET_SETUP=1
+fi
+
 vendor_runcpm "${vendor_update}"
 prepare_runtime "${runtime_dir}" "${mbasic_path}" ""
 export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
@@ -98,21 +102,33 @@ if [[ -n "${file_path}" ]]; then
       rm -f "${runtime_dir}/AUTOEXEC.TXT"
     ) &
     if [[ -t 0 ]]; then
-      startup_command="$(printf 'LOAD "%s"\r' "${staged_program}")"
+      startup_command="$(printf 'LOAD "%s"\rLIST\r' "${staged_program}")"
       exec python3 -m basic80_interactive --runtime "${runtime_dir}" --startup-command "${startup_command}"
     fi
     exec < <(
-      printf 'LOAD "%s"\r' "${staged_program}"
+      printf 'LOAD "%s"\rLIST\r' "${staged_program}"
       cat
     )
     launch_shell "${runtime_dir}"
     exit $?
   fi
   printf 'MBASIC %s\n' "${staged_program}" > "${runtime_dir}/AUTOEXEC.TXT"
+  (
+    sleep 1
+    rm -f "${runtime_dir}/AUTOEXEC.TXT"
+  ) &
   if [[ -n "${timeout_spec}" ]]; then
-    CLASSIC_BASIC_RUNCPM_BATCH_TIMEOUT="${timeout_spec}" launch_batch_with_one_shot_autoexec "${runtime_dir}"
+    CLASSIC_BASIC_RUNCPM_BATCH_TIMEOUT="${timeout_spec}" python3 "${ROOT_DIR}/src/runcpm_batch_exit.py" \
+      --runtime "${runtime_dir}" \
+      --intermediate-prompt "Ok" \
+      --intermediate-command "SYSTEM" \
+      --output-filter basic80
   else
-    launch_batch_with_one_shot_autoexec "${runtime_dir}"
+    python3 "${ROOT_DIR}/src/runcpm_batch_exit.py" \
+      --runtime "${runtime_dir}" \
+      --intermediate-prompt "Ok" \
+      --intermediate-command "SYSTEM" \
+      --output-filter basic80
   fi
   exit $?
 fi

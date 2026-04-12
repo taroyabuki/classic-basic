@@ -61,18 +61,42 @@ class GrantsBasicRuntimeTests(unittest.TestCase):
     def test_run_program_file_sends_run_and_returns_console_text(self) -> None:
         machine = GrantSearleMachine(GrantSearleConfig(rom_path=Path("/tmp/rom.bin")))
         machine._booted = True
-        machine._console = list("Z80 BASIC\nOk\n42\n")
+        machine._console = list("Z80 BASIC\nOk\n")
         sent: list[str] = []
-        machine.send_text = sent.append  # type: ignore[method-assign]
         machine.send_file = lambda path: sent.append(f"FILE:{path.name}")  # type: ignore[method-assign]
+
+        def fake_send_text(text: str) -> None:
+            sent.append(text)
+            machine._console.extend(list("RUN\n42\nOk\n"))
+
+        machine.send_text = fake_send_text  # type: ignore[method-assign]
         machine._run_until_input_idle = lambda *, step_budget, require_activity: None  # type: ignore[method-assign]
         machine._waiting_for_serial_input = lambda: False  # type: ignore[method-assign]
         machine._at_prompt = lambda: True  # type: ignore[method-assign]
 
         result = machine.run_program_file(Path("/tmp/demo.bas"))
 
-        self.assertEqual(result, "Z80 BASIC\nOk\n42\n")
+        self.assertEqual(result, "42\n")
         self.assertEqual(sent, ["FILE:demo.bas", "RUN\r"])
+
+    def test_run_program_file_filters_run_echo_and_trailing_prompt(self) -> None:
+        machine = GrantSearleMachine(GrantSearleConfig(rom_path=Path("/tmp/rom.bin")))
+        machine._booted = True
+        machine._console = list("Memory top?\nZ80 BASIC Ver 4.7b\nOk\n10 PRINT 1\n20 END\nOk\n")
+        machine.send_file = lambda path: machine._console.extend(list("10 PRINT 1\n20 END\nOk\n"))  # type: ignore[method-assign]
+
+        def fake_send_text(text: str) -> None:
+            self.assertEqual(text, "RUN\r")
+            machine._console.extend(list("RUN\n1\nOk\n"))
+
+        machine.send_text = fake_send_text  # type: ignore[method-assign]
+        machine._run_until_input_idle = lambda *, step_budget, require_activity: None  # type: ignore[method-assign]
+        machine._waiting_for_serial_input = lambda: False  # type: ignore[method-assign]
+        machine._at_prompt = lambda: True  # type: ignore[method-assign]
+
+        result = machine.run_program_file(Path("/tmp/demo.bas"))
+
+        self.assertEqual(result, "1\n")
 
     def test_run_program_file_raises_for_interactive_input_request(self) -> None:
         machine = GrantSearleMachine(GrantSearleConfig(rom_path=Path("/tmp/rom.bin")))
@@ -85,6 +109,19 @@ class GrantsBasicRuntimeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(InputRequestError, "interactive input"):
             machine.run_program_file(Path("/tmp/input.bas"))
+
+    def test_show_program_listing_sends_list_and_waits_for_prompt(self) -> None:
+        machine = GrantSearleMachine(GrantSearleConfig(rom_path=Path("/tmp/rom.bin")))
+        machine._booted = True
+        sent: list[str] = []
+        machine.send_text = sent.append  # type: ignore[method-assign]
+        idle_calls: list[bool] = []
+        machine._run_until_input_idle = lambda *, step_budget, require_activity: idle_calls.append(require_activity)  # type: ignore[method-assign]
+
+        machine.show_program_listing()
+
+        self.assertEqual(sent, ["LIST\r"])
+        self.assertEqual(idle_calls, [True])
 
     def test_run_terminal_non_tty_flushes_console_text(self) -> None:
         class FakeStdout(io.StringIO):

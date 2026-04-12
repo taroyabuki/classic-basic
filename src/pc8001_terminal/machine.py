@@ -108,6 +108,9 @@ class PC8001Machine:
                 self.inject_keys([ord(char) for char in "RUN"] + [0x0D])
                 # Let the ROM consume the queued RUN command before returning to the caller.
                 self._run_host_basic_until_settled()
+            else:
+                self.inject_keys([ord(char) for char in "LIST"] + [0x0D])
+                self._run_host_basic_until_settled()
 
     def handle_key(self, value: int) -> bool:
         value &= 0xFF

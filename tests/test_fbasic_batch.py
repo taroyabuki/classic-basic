@@ -21,6 +21,7 @@ from fbasic_batch import (
     _build_fm7_interactive_lua,
     extract_output_lines,
     is_input_prompt_line,
+    launch_mame,
     normalize_program_lines,
     post_run_settle_frames,
     run_batch,
@@ -214,6 +215,28 @@ class FBasicBatchTests(unittest.TestCase):
                         image_path=temp_path / "screen.png",
                         timeout_seconds=0.1,
                     )
+
+    def test_launch_mame_sets_parent_death_preexec_on_linux(self) -> None:
+        fake_proc = mock.Mock()
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            with mock.patch("fbasic_batch.subprocess.Popen", return_value=fake_proc) as popen:
+                result = launch_mame(
+                    mame_command="mame",
+                    rompath=temp_path,
+                    driver="fm77av",
+                    disk_path=None,
+                    lua_path=temp_path / "interactive.lua",
+                    extra_mame_args=[],
+                    headless=True,
+                )
+
+        self.assertIs(result, fake_proc)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        if sys.platform.startswith("linux"):
+            self.assertTrue(callable(popen.call_args.kwargs["preexec_fn"]))
+        else:
+            self.assertIsNone(popen.call_args.kwargs["preexec_fn"])
 
     def test_fm7_batch_progress_requires_ready_after_run_in_same_snapshot(self) -> None:
         progress = _FM7BatchProgress()

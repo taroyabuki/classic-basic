@@ -807,6 +807,12 @@ def emit_lines(lines) -> None:
     sys.stdout.flush()
 
 
+def interactive_startup_lines(screen_lines, source_text: str | None) -> list[str]:
+    if source_text is None:
+        return list(screen_lines)
+    return [line for line in source_text.splitlines() if line] + ["Ready"]
+
+
 def _extract_load_error(screen_lines: list[str]) -> str | None:
     for line in screen_lines:
         stripped = line.strip()
@@ -1184,7 +1190,7 @@ def _run_basic_once(
         raw_screen = handle_startup_prompts(session, deadline=deadline)
         screen_lines = normalize_screen_text(raw_screen)
         if interactive_tty and source_text is None:
-            emit_lines(screen_lines)
+            emit_lines(interactive_startup_lines(screen_lines, None))
 
         if source_text is not None:
             raw_screen, screen_lines = _load_source(
@@ -1196,7 +1202,7 @@ def _run_basic_once(
                 optimize_for_run=args.run,
             )
             if interactive_tty:
-                emit_lines(["Ready"])
+                emit_lines(interactive_startup_lines(screen_lines, source_text))
 
         if args.run:
             before = raw_screen
@@ -1293,8 +1299,8 @@ def run_basic(args) -> int:
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--file")
-    parser.add_argument("--run", action="store_true")
+    parser.add_argument("-f", "--file")
+    parser.add_argument("-r", "--run", action="store_true")
     parser.add_argument("--timeout")
     args = parser.parse_args()
     if args.run and not args.file:

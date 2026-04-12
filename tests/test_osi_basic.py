@@ -72,6 +72,40 @@ class OsiBasicTests(unittest.TestCase):
         self.assertIn("RUN", console.output_text)
         self.assertIn(" 4 ", console.output_text)
 
+    def test_main_filters_startup_noise_for_file_run_output(self) -> None:
+        class FakeMachine:
+            def run(self, console, max_steps: int = 5_000_000):
+                del max_steps
+                for char in (
+                    "\r\nMEMORY SIZE? 8191\r\nTERMINAL WIDTH? 80\r\n\r\n"
+                    " 7422 BYTES FREE\r\n\r\n"
+                    "OSI 6502 BASIC VERSION 1.0 REV 3.2\r\n"
+                    "COPYRIGHT 1977 BY MICROSOFT CO.\r\n\r\n"
+                    "OK\r\n"
+                    "10 PRINT 1\r\n"
+                    "20 END\r\n"
+                    "RUN\r\n"
+                    "1\r\n\r\nOK\r\n"
+                ):
+                    console.write_byte(ord(char))
+                return osi_basic.OsiBasicResult(reason="eof", steps=1, pc=0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            program_path = Path(tmp) / "demo.bas"
+            program_path.write_text("10 PRINT 1\n20 END\n", encoding="ascii")
+            fake_stdin = io.TextIOWrapper(io.BytesIO(b""), encoding="ascii")
+            stdout = io.StringIO()
+            with (
+                patch.object(osi_basic, "OsiBasicMachine", return_value=FakeMachine()),
+                patch.object(osi_basic.sys, "stdin", fake_stdin),
+                patch("sys.stdout", stdout),
+            ):
+                with patch.object(osi_basic.sys.stdin, "isatty", return_value=True):
+                    exit_code = osi_basic.main([str(program_path)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stdout.getvalue(), "1\n")
+
     def test_file_mode_loads_program_without_autorun_when_run_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             program_path = Path(tmp) / "demo.bas"
@@ -81,6 +115,7 @@ class OsiBasicTests(unittest.TestCase):
 
         self.assertIn(b"10 PRINT 2+2\r20 END\r", staged_input)
         self.assertNotIn(b"RUN\r", staged_input)
+        self.assertNotIn(b"LIST\r", staged_input)
 
     def test_session_console_normalizes_lowercase_letters_to_uppercase(self) -> None:
         console = SessionConsole(staged_input=b"print a\r")

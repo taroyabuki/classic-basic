@@ -118,10 +118,30 @@ class FM11BasicPreprocessTests(unittest.TestCase):
 
 
 class FM11BasicRuntimeTests(unittest.TestCase):
+    def test_parse_args_accepts_short_file_option(self) -> None:
+        with mock.patch.object(sys, "argv", ["fm11basic", "-f", "demo.bas"]):
+            args = fm11basic.parse_args()
+
+        self.assertEqual(args.file, "demo.bas")
+        self.assertFalse(args.run)
+
+    def test_parse_args_accepts_short_run_and_file_options(self) -> None:
+        with mock.patch.object(sys, "argv", ["fm11basic", "-r", "-f", "demo.bas"]):
+            args = fm11basic.parse_args()
+
+        self.assertEqual(args.file, "demo.bas")
+        self.assertTrue(args.run)
+
     def test_filter_new_lines_keeps_ready_prompt_after_command_output(self) -> None:
         self.assertEqual(
             fm11basic.filter_new_lines([" 20", "Ready"], "PRINT 10*2\n"),
             [" 20", "Ready"],
+        )
+
+    def test_interactive_startup_lines_show_loaded_source_before_ready(self) -> None:
+        self.assertEqual(
+            fm11basic.interactive_startup_lines(["Ready"], "10 A=10\n20 PRINT A\n"),
+            ["10 A=10", "20 PRINT A", "Ready"],
         )
 
     def test_try_fast_startup_ready_sends_three_standard_answers(self) -> None:

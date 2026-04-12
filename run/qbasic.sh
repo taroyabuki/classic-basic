@@ -99,6 +99,11 @@ if [[ -n "${file_path}" && "${dos_command}" != "qbasic" ]]; then
   die "--file cannot be combined with --command"
 fi
 
+if [[ -n "${run_program}" ]]; then
+  export CLASSIC_BASIC_QUIET_SETUP=1
+  export CLASSIC_BASIC_DOSEMU_PTY=off
+fi
+
 prepare_qbasic_runtime "${archive_path}" "${exe_path}" "${runtime_dir}" "${home_dir}"
 if [[ -n "${file_path}" ]]; then
   staged_program="$(stage_qbasic_program "${file_path}" "${runtime_dir}")"

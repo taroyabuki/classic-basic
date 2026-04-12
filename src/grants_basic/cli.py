@@ -15,8 +15,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run Grant Searle's Z80 SBC ROM BASIC in a terminal.",
     )
     parser.add_argument("--rom", type=Path, default=DEFAULT_ROM_PATH, help="Path to rom.bin")
-    parser.add_argument("--file", type=Path, help="Load a BASIC source file")
-    parser.add_argument("--run", action="store_true", help="Run the loaded BASIC source file")
+    parser.add_argument("-f", "--file", type=Path, help="Load a BASIC source file")
+    parser.add_argument("-r", "--run", action="store_true", help="Run the loaded BASIC source file")
     parser.add_argument("--timeout", type=float, default=None, help="Wall-clock timeout in seconds")
     parser.add_argument(
         "--max-steps",

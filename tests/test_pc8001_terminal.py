@@ -574,6 +574,30 @@ class PC8001MachineTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(stdout.getvalue(), " 1 \n")
 
+    def test_boot_demo_lists_loaded_program_before_interactive_mode(self) -> None:
+        machine = PC8001Machine(
+            PC8001Config(
+                roms=(RomSpec(path=Path("/tmp/pc8001-rom.bin"), start=0x0000, name="rom.bin"),),
+                entry_point=0x0000,
+                startup_program=Path("/tmp/prog.bas"),
+                run_startup=False,
+            )
+        )
+        machine.run_firmware = lambda max_steps: ExecutionResult(reason="input_wait", steps=1, pc=0x0000)  # type: ignore[method-assign]
+        machine._use_host_terminal = lambda: True  # type: ignore[method-assign]
+        machine._bootstrap_host_basic = lambda: None  # type: ignore[method-assign]
+        machine.load_basic_source = lambda path: None  # type: ignore[method-assign]
+        machine.last_error = None
+        injected: list[list[int]] = []
+        machine.inject_keys = lambda values: injected.append(values) or True  # type: ignore[method-assign]
+        settle_calls: list[None] = []
+        machine._run_host_basic_until_settled = lambda max_rounds=None: settle_calls.append(None)  # type: ignore[method-assign]
+
+        machine.boot_demo()
+
+        self.assertEqual(injected, [[ord(char) for char in "LIST"] + [0x0D]])
+        self.assertEqual(settle_calls, [None, None])
+
     def test_defdbl_and_hash_suffix_accepted(self) -> None:
         """N-BASIC: DEFDBL and # type suffix are silently accepted (real hardware behaviour)."""
         if not DEFAULT_ROM_PATH.is_file():

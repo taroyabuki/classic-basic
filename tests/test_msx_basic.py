@@ -11,6 +11,7 @@ from msx_basic.cli import main
 from msx_basic.loop import (
     _BLINK_BLOCK_CURSOR,
     _INTERACTIVE_INPUT_TIMEOUT,
+    _normalize_interactive_completed_line,
     _normalize_interactive_cursor_row,
     _post_run_prompt_visible,
     _RESET_CURSOR_STYLE,
@@ -180,6 +181,31 @@ class MsxBasicLoopTests(unittest.TestCase):
 
         self.assertEqual(events, [("cursor", "")])
 
+    def test_screen_tracker_treats_function_key_guide_cursor_row_as_empty(self) -> None:
+        tracker = ScreenTracker()
+        tracker.seed(*_screen(8, (4, "  run"), (5, "  COUNT 1"), (6, "  COUNT 2"), (7, "  COUNT 3"), (8, "Ok")))
+
+        events = tracker.update(
+            *_screen(
+                9,
+                (4, "  run"),
+                (5, "  COUNT 1"),
+                (6, "  COUNT 2"),
+                (7, "  COUNT 3"),
+                (8, "Ok"),
+                (9, "  color  auto   goto   list   run"),
+            )
+        )
+
+        self.assertEqual(
+            events,
+            [
+                ("line", "  COUNT 3"),
+                ("line", "Ok"),
+                ("cursor", ""),
+            ],
+        )
+
     def test_screen_tracker_captures_completed_lines_after_seeded_prompt(self) -> None:
         tracker = ScreenTracker()
         tracker.seed(*_screen(5, (3, "Ok"), (4, "PRINT 2+2")))
@@ -246,6 +272,9 @@ class MsxBasicLoopTests(unittest.TestCase):
             (23, "  color  auto   goto   list   run"),
         )
         self.assertTrue(_post_run_prompt_visible(lines, cursor_row))
+
+    def test_normalize_interactive_completed_line_ignores_function_key_guide(self) -> None:
+        self.assertIsNone(_normalize_interactive_completed_line("  color  auto   goto   list   run"))
 
     def test_numeric_program_output_is_not_treated_as_source_listing(self) -> None:
         self.assertFalse(_looks_like_source_listing("4131415926535898"))
@@ -568,6 +597,24 @@ class MsxBasicLoopTests(unittest.TestCase):
         )
         run_loop_mock.assert_called_once_with(bridge, terminal)
 
+    def test_run_interactive_renders_loaded_program_listing_after_prompt(self) -> None:
+        terminal = FakeTerminal([])
+        bridge = FakeBridge([_screen(3, (3, "Ok"))])
+
+        with patch("msx_basic.loop._get_raw_terminal", return_value=lambda: FakeTerminalContext(terminal)):
+            with patch("msx_basic.loop.run_loop") as run_loop_mock:
+                run_interactive(bridge, loaded_program_lines=["10 PRINT 1", "20 END"])
+
+        self.assertEqual(
+            "".join(terminal.writes),
+            (
+                f"{_SHOW_CURSOR}{_BLINK_BLOCK_CURSOR}MSX-BASIC ready.\r\n"
+                "Ok\r\n10 PRINT 1\r\n20 END\r\n"
+                f"{_RESET_CURSOR_STYLE}{_SHOW_CURSOR}"
+            ),
+        )
+        run_loop_mock.assert_called_once_with(bridge, terminal)
+
 
 class MsxBasicBridgeTests(unittest.TestCase):
     def test_get_screen_state_preserves_trailing_spaces_for_active_rows(self) -> None:
@@ -595,7 +642,7 @@ class MsxBasicCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         bridge = bridge_cls.return_value.__enter__.return_value
         run_load_mock.assert_called_once_with(bridge, Path("demo.bas"))
-        run_interactive_mock.assert_called_once_with(bridge)
+        run_interactive_mock.assert_called_once_with(bridge, loaded_program_lines=run_load_mock.return_value)
 
     def test_run_loaded_uses_loaded_batch_path_not_plain_batch(self) -> None:
         with patch("msx_basic.cli.OpenMSXBridge") as bridge_cls:

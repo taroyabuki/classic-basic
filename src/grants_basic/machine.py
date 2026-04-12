@@ -101,16 +101,22 @@ class GrantSearleMachine:
     def run_program_file(self, path: Path) -> str:
         self.require_boot()
         self.send_file(path)
+        self._console_offset = len(self._console)
         self.send_text("RUN\r")
         self._run_until_input_idle(step_budget=self.config.prompt_step_budget, require_activity=True)
         if self._waiting_for_serial_input() and not self._at_prompt():
             raise InputRequestError("program requested interactive input, which is not supported in --run mode")
-        return self.console_text()
+        return _filter_batch_run_output(self.consume_console_text())
 
     def load_program_file(self, path: Path) -> str:
         self.require_boot()
         self.send_file(path)
         return self.console_text()
+
+    def show_program_listing(self) -> None:
+        self.require_boot()
+        self.send_text("LIST\r")
+        self._run_until_input_idle(step_budget=self.config.prompt_step_budget, require_activity=True)
 
     def console_text(self) -> str:
         return "".join(self._console)
@@ -244,3 +250,18 @@ class GrantSearleMachine:
     def require_boot(self) -> None:
         if not self._booted:
             raise RuntimeError("machine not booted")
+
+
+def _filter_batch_run_output(text: str) -> str:
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines and lines[0].strip().upper() == "RUN":
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and lines[-1].strip() == "Ok":
+        lines.pop()
+    if not lines:
+        return ""
+    return "\n".join(line.rstrip() for line in lines) + "\n"

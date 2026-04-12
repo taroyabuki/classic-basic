@@ -10,6 +10,7 @@ _OSC_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
 _ESC_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\([0-9A-Za-z])")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _WHITESPACE_RE = re.compile(r"[ \t]+")
+_TRAILING_READY_NOISE_RE = re.compile(r"^(Ok)[\u00A0\u00FF\uFFFD\x00-\x1f\x7f ]+$")
 _BASIC_SOURCE_RE = re.compile(
     r"^\d+\s+(?:"
     r"REM\b|IF\b|FOR\b|NEXT\b|PRINT\b|INPUT\b|LET\b|DIM\b|READ\b|DATA\b|"
@@ -73,6 +74,10 @@ def extract_clean_lines(text: str) -> list[str]:
         line = _WHITESPACE_RE.sub(" ", raw_line).strip()
         if not line:
             continue
+        line = "".join("\uFFFD" if 0xDC80 <= ord(char) <= 0xDCFF else char for char in line)
+        ready_match = _TRAILING_READY_NOISE_RE.match(line)
+        if ready_match is not None:
+            line = ready_match.group(1)
         if _should_skip(line):
             continue
         lines.append(line)

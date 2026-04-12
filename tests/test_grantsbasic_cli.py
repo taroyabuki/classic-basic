@@ -37,6 +37,19 @@ class GrantsBasicCliTests(unittest.TestCase):
         machine.run_program_file.assert_not_called()
         machine.run_terminal.assert_called_once_with()
 
+    def test_short_file_launch_loads_program_before_terminal(self) -> None:
+        with patch("grants_basic.cli.GrantSearleMachine") as machine_cls:
+            machine = machine_cls.return_value
+            machine.run_terminal.return_value = 0
+
+            result = main(["-f", "demo.bas"])
+
+        self.assertEqual(result, 0)
+        machine.boot.assert_called_once_with()
+        machine.load_program_file.assert_called_once_with(Path("demo.bas"))
+        machine.run_program_file.assert_not_called()
+        machine.run_terminal.assert_called_once_with()
+
     def test_run_file_writes_stdout_and_does_not_enter_terminal(self) -> None:
         stdout = io.StringIO()
         with patch("grants_basic.cli.GrantSearleMachine") as machine_cls, patch("sys.stdout", stdout):
@@ -44,6 +57,20 @@ class GrantsBasicCliTests(unittest.TestCase):
             machine.run_program_file.return_value = "42\n"
 
             result = main(["--run", "--file", "demo.bas"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(stdout.getvalue(), "42\n")
+        machine.boot.assert_called_once_with()
+        machine.run_program_file.assert_called_once_with(Path("demo.bas"))
+        machine.run_terminal.assert_not_called()
+
+    def test_short_run_file_writes_stdout_and_does_not_enter_terminal(self) -> None:
+        stdout = io.StringIO()
+        with patch("grants_basic.cli.GrantSearleMachine") as machine_cls, patch("sys.stdout", stdout):
+            machine = machine_cls.return_value
+            machine.run_program_file.return_value = "42\n"
+
+            result = main(["-r", "-f", "demo.bas"])
 
         self.assertEqual(result, 0)
         self.assertEqual(stdout.getvalue(), "42\n")

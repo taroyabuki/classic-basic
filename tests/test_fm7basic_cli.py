@@ -117,6 +117,40 @@ class Fm7BasicCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         shutdown_process.assert_called_once_with(proc, temp_dir=temp_path)
 
+    def test_run_interactive_session_waits_for_ready_before_emitting_loaded_listing(self) -> None:
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        proc.wait.return_value = 0
+        proc.stdout = None
+        proc.stderr = None
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            manager = mock.Mock()
+            with (
+                mock.patch.dict("os.environ", {"DISPLAY": ":1"}, clear=True),
+                mock.patch.object(
+                    fm7basic_cli,
+                    "_launch_interactive_session",
+                    return_value=(proc, temp_path, temp_path / "input.txt"),
+                ),
+                mock.patch.object(fm7basic_cli, "_forward_stdin_to_input_queue"),
+                mock.patch.object(fm7basic_cli, "_shutdown_interactive_process", return_value=0),
+                mock.patch.object(fm7basic_cli, "_wait_for_gui_ready_output") as wait_ready,
+                mock.patch.object(fm7basic_cli, "_emit_loaded_program_listing") as emit_listing,
+            ):
+                manager.attach_mock(wait_ready, "wait_ready")
+                manager.attach_mock(emit_listing, "emit_listing")
+                result = fm7basic_cli.run_interactive_session(
+                    mame_command="mame",
+                    rompath=Path("/tmp/roms"),
+                    driver="fm7",
+                    file_path=Path("demo.bas"),
+                    extra_mame_args=[],
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(manager.mock_calls[:2], [mock.call.wait_ready(mock.ANY), mock.call.emit_listing(Path("demo.bas"))])
+
     def test_run_interactive_session_returns_zero_on_eof(self) -> None:
         proc = mock.Mock()
         proc.poll.return_value = None
@@ -178,6 +212,7 @@ class Fm7BasicCliTests(unittest.TestCase):
                 ),
                 mock.patch.object(fbasic_batch, "launch_mame", return_value=proc),
                 mock.patch.object(fm7basic_cli, "_forward_stdin_to_input_queue", side_effect=KeyboardInterrupt),
+                mock.patch.object(fm7basic_cli, "_wait_for_headless_ready_output"),
                 mock.patch("fm7basic_cli.time.sleep", side_effect=fake_sleep),
                 mock.patch("sys.stdout", stdout_proxy),
             ):
@@ -191,6 +226,49 @@ class Fm7BasicCliTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(stdout_sink.getvalue(), "READY\nPRINT 2+2\n4\nREADY\n")
+
+    def test_run_headless_interactive_session_waits_for_ready_before_emitting_loaded_listing(self) -> None:
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        proc.wait.return_value = 0
+        proc.stdout = None
+        proc.stderr = None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            output_path = temp_path / "screen.txt"
+            output_path.write_text("READY\n", encoding="ascii")
+            program_path = temp_path / "demo.bas"
+            program_path.write_text("10 PRINT 1\n", encoding="ascii")
+            manager = mock.Mock()
+            with (
+                mock.patch("sys.stdin", mock.Mock(isatty=mock.Mock(return_value=False))),
+                mock.patch.object(
+                    fbasic_batch,
+                    "prepare_fm7_headless_interactive_session",
+                    return_value=(temp_path, temp_path / "interactive.lua", temp_path / "input.txt", output_path),
+                ),
+                mock.patch.object(fbasic_batch, "launch_mame", return_value=proc),
+                mock.patch.object(fm7basic_cli, "_copy_console_snapshot", return_value=mock.Mock()),
+                mock.patch.object(fm7basic_cli, "_forward_stdin_to_input_queue", side_effect=KeyboardInterrupt),
+                mock.patch.object(fm7basic_cli, "_wait_for_headless_ready_output") as wait_ready,
+                mock.patch.object(fm7basic_cli, "_emit_loaded_program_listing") as emit_listing,
+            ):
+                manager.attach_mock(wait_ready, "wait_ready")
+                manager.attach_mock(emit_listing, "emit_listing")
+                result = fm7basic_cli.run_headless_interactive_session(
+                    mame_command="mame",
+                    rompath=temp_path,
+                    driver="fm7",
+                    file_path=program_path,
+                    extra_mame_args=[],
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            manager.mock_calls[:2],
+            [mock.call.wait_ready(output_path), mock.call.emit_listing(program_path)],
+        )
 
     def test_console_echo_filter_suppresses_tty_input_echo_once(self) -> None:
         echo_filter = fm7basic_cli._ConsoleEchoFilter(suppress_terminal_echo=True)
@@ -252,6 +330,70 @@ class Fm7BasicCliTests(unittest.TestCase):
         echo_filter.record_input(b"PRINT 2+2\n")
 
         self.assertEqual(echo_filter.filter_lines(["PRINT 2+2", "4", "READY"]), ["PRINT 2+2", "4", "READY"])
+
+    def test_console_echo_filter_suppresses_preloaded_file_echo_even_without_tty_echo_suppression(self) -> None:
+        echo_filter = fm7basic_cli._ConsoleEchoFilter(suppress_terminal_echo=False)
+        echo_filter.record_input(b'10 PRINT "COMMON SAMPLE"\n20 PRINT "INTEGER";2\n', suppress_echo=True)
+
+        self.assertEqual(echo_filter.filter_lines(['       10 PRINT "C']), [])
+        self.assertEqual(echo_filter.filter_lines(['       10 PRINT "COMMON SAMPLE"']), [])
+        self.assertEqual(echo_filter.filter_lines(["20 PRIN"]), [])
+        self.assertEqual(echo_filter.filter_lines(['20 PRINT "INTEGER";2', "Ready"]), ["Ready"])
+
+    def test_emit_loaded_program_listing_prints_normalized_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            program = Path(tmp) / "demo.bas"
+            program.write_text('10 print "hello"\n20 end\n', encoding="ascii")
+            stdout_sink = io.StringIO()
+
+            with mock.patch("sys.stdout", stdout_sink):
+                fm7basic_cli._emit_loaded_program_listing(program)
+
+        self.assertEqual(stdout_sink.getvalue(), '10 print "hello"\n20 end\n')
+
+    def test_copy_console_snapshot_suppresses_partial_preloaded_file_lines(self) -> None:
+        snapshots = iter(
+            [
+                ["Ready"],
+                ["Ready", '       10 PRINT "C'],
+                ["Ready", '       10 PRINT "COMMON SAMPL'],
+                ["Ready", '       10 PRINT "COMMON SAMPLE"'],
+                ["Ready", '       10 PRINT "COMMON SAMPLE"', "20 PRIN"],
+                ["Ready", '       10 PRINT "COMMON SAMPLE"', '20 PRINT "INTEGER";2'],
+                ["Ready", '       10 PRINT "COMMON SAMPLE"', '20 PRINT "INTEGER";2'],
+            ]
+        )
+        stop_event = threading.Event()
+        stdout_sink = io.StringIO()
+        echo_filter = fm7basic_cli._ConsoleEchoFilter(suppress_terminal_echo=False)
+        echo_filter.record_input(
+            b'10 PRINT "COMMON SAMPLE"\n20 PRINT "INTEGER";2\n',
+            suppress_echo=True,
+        )
+
+        def fake_read_text_capture_lines(_path: Path) -> list[str]:
+            try:
+                return next(snapshots)
+            except StopIteration:
+                return ["Ready", '       10 PRINT "COMMON SAMPLE"', '20 PRINT "INTEGER";2']
+
+        sleep_count = {"value": 0}
+
+        def fake_sleep(_seconds: float) -> None:
+            sleep_count["value"] += 1
+            if sleep_count["value"] >= 6:
+                stop_event.set()
+
+        with (
+            mock.patch.object(fbasic_batch, "_read_text_capture_lines", side_effect=fake_read_text_capture_lines),
+            mock.patch("fm7basic_cli.time.sleep", side_effect=fake_sleep),
+            mock.patch("sys.stdout", stdout_sink),
+        ):
+            thread = fm7basic_cli._copy_console_snapshot(Path("/tmp/fm7-screen.txt"), stop_event, echo_filter)
+            thread.join(timeout=1.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(stdout_sink.getvalue(), "Ready\n")
 
     def test_snapshot_looks_stable_requires_ready_prompt(self) -> None:
         self.assertTrue(fm7basic_cli._snapshot_looks_stable(["READY"]))
@@ -417,6 +559,12 @@ class Fm7BasicCliTests(unittest.TestCase):
         self.assertFalse(startup_filter.should_emit(b"fm77av      : fbasic30.rom (31744 bytes) - NEEDS REDUMP\n"))
         self.assertTrue(startup_filter.should_emit(b"unknown warning\n"))
         self.assertTrue(startup_filter.should_emit(b"romset fm77av [fm7] is best available\n"))
+
+    def test_startup_filter_drops_average_speed_after_passthrough(self) -> None:
+        startup_filter = fm7basic_cli._StartupOutputFilter(fm7basic_cli._FM77AV_FILTERED_STARTUP_LINES)
+
+        self.assertTrue(startup_filter.should_emit(b"FM-7 BASIC READY\n"))
+        self.assertFalse(startup_filter.should_emit(b"Average speed: 718.78% (3 seconds)\n"))
 
     def test_launch_interactive_session_filters_known_fm77av_startup_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -72,14 +72,18 @@ class DosTextShell:
         self.program_lines: OrderedDict[int, str] = OrderedDict()
         self.direct_history: list[str] = []
         self._marker_counter = 0
+        self._startup_messages: list[str] = []
         if file_path is not None:
-            self._load_program_file(Path(file_path))
+            self._load_program_file(Path(file_path), emit_output=False)
 
     def run(self) -> int:
         print(
             f"{self.shell_name} text shell. Numbered lines and direct-mode state persist. Ctrl-D exits.",
             flush=True,
         )
+        for line in self._startup_messages:
+            print(line, flush=True)
+        self._startup_messages.clear()
         while True:
             try:
                 command = input(self.prompt)
@@ -144,13 +148,18 @@ class DosTextShell:
         path.write_text(text, encoding="ascii")
         print(f"Saved {len(self.program_lines)} line(s) to {path}")
 
-    def _load_program_file(self, path: Path) -> None:
+    def _load_program_file(self, path: Path, *, emit_output: bool = True) -> None:
         lines = _normalize_program_text(path.read_text(encoding="ascii"))
         self.program_lines.clear()
         self.direct_history.clear()
         for line in lines:
             self._store_program_line(line)
-        print(f"Loaded {len(self.program_lines)} line(s) from {path}")
+        messages = [f"Loaded {len(self.program_lines)} line(s) from {path}", *self.program_lines.values()]
+        if emit_output:
+            for line in messages:
+                print(line)
+            return
+        self._startup_messages.extend(messages)
 
     def _run_loaded_program(self) -> None:
         if not self.program_lines:

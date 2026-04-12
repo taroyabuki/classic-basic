@@ -119,6 +119,7 @@ class N88BasicCLI:
         self.stdin_eof = False
         self.control_socket_path: str | None = None
         self._startup_screen_snapshot: list[str] | None = None
+        self._preloaded_program_lines: list[str] = []
         self.interactive_bridge_session: RunControlSession | None = None
         self._last_rendered_screen_lines: list[str] = []
         self._interactive_line_open = False
@@ -513,13 +514,16 @@ class N88BasicCLI:
         return False
 
     def _emit_startup_screen_snapshot(self) -> None:
-        lines = self._startup_screen_snapshot or ["Ok"]
-        sys.stdout.write("\r\n".join(lines) + "\r\n")
+        screen_lines = self._startup_screen_snapshot or ["Ok"]
+        sys.stdout.write("\r\n".join(screen_lines) + "\r\n")
+        if self._preloaded_program_lines:
+            sys.stdout.write("\r\n".join(self._preloaded_program_lines) + "\r\n")
         sys.stdout.flush()
-        self._last_rendered_screen_lines = list(lines)
+        self._last_rendered_screen_lines = list(screen_lines)
         self._interactive_line_open = False
         self._interactive_line_length = 0
         self._startup_screen_snapshot = None
+        self._preloaded_program_lines = []
 
     def _wait_for_screen_change_and_ready(
         self,
@@ -603,6 +607,7 @@ class N88BasicCLI:
     def _enter_basic_interactive_mode(self, filepath: str | None = None) -> RunControlSession | None:
         session = RunControlSession(self._ensure_control_socket_path())
         self._startup_screen_snapshot = None
+        self._preloaded_program_lines = []
         self.interactive_bridge_session = None
         self._last_rendered_screen_lines = []
 
@@ -629,6 +634,7 @@ class N88BasicCLI:
                 session.disconnect()
                 self.stop_quasi88()
                 return None
+            self._preloaded_program_lines = _load_program_source_lines(Path(filepath))
 
         self.drain_output(clear=True)
         self._startup_screen_snapshot = self._capture_interactive_screen_lines(session)

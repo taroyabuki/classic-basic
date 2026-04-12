@@ -245,6 +245,8 @@ class ScreenTracker:
             candidate = lines[cursor_row - 1]
             if candidate.strip() and candidate.strip() not in {"Ok", _FUNCTION_KEY_GUIDE}:
                 cursor_text = candidate
+        if cursor_text.strip().casefold() == _FUNCTION_KEY_GUIDE.casefold():
+            cursor_text = ""
         if not cursor_text.strip():
             cursor_text = ""
         events.append(("cursor", cursor_text))
@@ -343,6 +345,12 @@ def _startup_terminal_render(lines: list[str], cursor_row: int) -> str:
     return ""
 
 
+def _loaded_program_listing_render(loaded_program_lines: list[str] | None) -> str:
+    if not loaded_program_lines:
+        return ""
+    return "".join(f"{line}\r\n" for line in loaded_program_lines if line)
+
+
 def _interactive_echo_key(text: str) -> str:
     return text.strip().casefold()
 
@@ -351,6 +359,8 @@ def _normalize_interactive_completed_line(text: str) -> str | None:
     completed = text.rstrip()
     stripped = completed.strip()
     if not stripped:
+        return None
+    if stripped.casefold() == _FUNCTION_KEY_GUIDE.casefold():
         return None
     if stripped.casefold() == "ok":
         return "Ok"
@@ -515,7 +525,7 @@ def _get_raw_terminal():
     return RawTerminal
 
 
-def run_interactive(bridge: OpenMSXBridge) -> None:
+def run_interactive(bridge: OpenMSXBridge, loaded_program_lines: list[str] | None = None) -> None:
     """Start the interactive MSX-BASIC terminal session."""
     RawTerminal = _get_raw_terminal()
     print("Booting MSX-BASIC… (Ctrl-D to exit)", flush=True)
@@ -540,6 +550,9 @@ def run_interactive(bridge: OpenMSXBridge) -> None:
             startup_render = _startup_terminal_render(lines, cursor_row)
             if startup_render:
                 terminal.write(startup_render)
+            loaded_program_render = _loaded_program_listing_render(loaded_program_lines)
+            if loaded_program_render:
+                terminal.write(loaded_program_render)
             run_loop(bridge, terminal)
         finally:
             terminal.write(_RESET_CURSOR_STYLE)
@@ -598,7 +611,7 @@ def run_loaded_batch(bridge: OpenMSXBridge, program: Path) -> int:
     return 0
 
 
-def run_load(bridge: OpenMSXBridge, program: Path) -> None:
+def run_load(bridge: OpenMSXBridge, program: Path) -> list[str]:
     """Type a BASIC source file into memory without running it.
 
     After this returns the MSX-BASIC Ok prompt is active and the caller can
@@ -616,10 +629,11 @@ def run_load(bridge: OpenMSXBridge, program: Path) -> None:
     bridge.command("set throttle off", timeout=3.0)
     bridge.command("set speed 999", timeout=3.0)
 
-    _load_program_lines(bridge, program)
+    loaded_lines = _load_program_lines(bridge, program)
 
     # Wait for the last line to be accepted and the Ok prompt to reappear.
     _ensure_prompt_after_load(bridge, timeout=4.0)
+    return loaded_lines
 
 
 def _load_program_lines(bridge: OpenMSXBridge, program: Path) -> list[str]:
