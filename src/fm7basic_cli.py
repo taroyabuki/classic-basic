@@ -512,6 +512,8 @@ def main(argv: list[str] | None = None) -> int:
             file_path=args.file,
             extra_mame_args=extra_mame_args,
         )
+    except KeyboardInterrupt:
+        return 130
     except (RuntimeError, ValueError, UnicodeDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

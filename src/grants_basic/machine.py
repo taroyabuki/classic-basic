@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -98,15 +99,34 @@ class GrantSearleMachine:
             if self._booted:
                 self._run_until_input_idle(step_budget=self.config.prompt_step_budget, require_activity=True)
 
-    def run_program_file(self, path: Path) -> str:
+    def run_program_file(
+        self,
+        path: Path,
+        *,
+        emit_output: Callable[[str], None] | None = None,
+    ) -> str:
         self.require_boot()
         self.send_file(path)
         self._console_offset = len(self._console)
         self.send_text("RUN\r")
-        self._run_until_input_idle(step_budget=self.config.prompt_step_budget, require_activity=True)
-        if self._waiting_for_serial_input() and not self._at_prompt():
-            raise InputRequestError("program requested interactive input, which is not supported in --run mode")
-        return _filter_batch_run_output(self.consume_console_text())
+        streamer = _GrantBatchRunStreamer()
+        while True:
+            result = self.run_slice(self.config.max_steps)
+            chunk = self.consume_console_text()
+            if chunk:
+                filtered = streamer.feed(chunk)
+                if filtered and emit_output is not None:
+                    emit_output(filtered)
+            if result.reason == "unsupported":
+                raise RuntimeError(self.last_error or "unsupported instruction")
+            if self._waiting_for_serial_input() and not self._at_prompt():
+                raise InputRequestError("program requested interactive input, which is not supported in --run mode")
+            if self._at_prompt():
+                break
+        filtered = streamer.finish()
+        if filtered and emit_output is not None:
+            emit_output(filtered)
+        return streamer.output_text
 
     def load_program_file(self, path: Path) -> str:
         self.require_boot()
@@ -265,3 +285,64 @@ def _filter_batch_run_output(text: str) -> str:
     if not lines:
         return ""
     return "\n".join(line.rstrip() for line in lines) + "\n"
+
+
+class _GrantBatchRunStreamer:
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._saw_run = False
+        self._pending_line: str | None = None
+        self._emitted: list[str] = []
+
+    @property
+    def output_text(self) -> str:
+        if not self._emitted:
+            return ""
+        return "".join(f"{line}\n" for line in self._emitted)
+
+    def feed(self, text: str) -> str:
+        self._buffer += text.replace("\r\n", "\n").replace("\r", "\n")
+        emitted: list[str] = []
+        while "\n" in self._buffer:
+            raw_line, self._buffer = self._buffer.split("\n", 1)
+            line = raw_line.rstrip()
+            if not self._saw_run:
+                if line.strip().upper() == "RUN":
+                    self._saw_run = True
+                continue
+            if not line.strip():
+                continue
+            flushed = self._flush_pending()
+            if flushed is not None:
+                emitted.append(flushed)
+            self._pending_line = line
+        return "".join(f"{line}\n" for line in emitted)
+
+    def finish(self) -> str:
+        if self._buffer:
+            line = self._buffer.rstrip()
+            self._buffer = ""
+            if self._saw_run and line.strip():
+                flushed = self._flush_pending()
+                emitted = [flushed] if flushed is not None else []
+                self._pending_line = line
+                tail = self._flush_pending(final=True)
+                if tail is not None:
+                    emitted.append(tail)
+                return "".join(f"{item}\n" for item in emitted)
+            if not self._saw_run and line.strip().upper() == "RUN":
+                self._saw_run = True
+        flushed = self._flush_pending(final=True)
+        if flushed is None:
+            return ""
+        return f"{flushed}\n"
+
+    def _flush_pending(self, *, final: bool = False) -> str | None:
+        if self._pending_line is None:
+            return None
+        line = self._pending_line
+        self._pending_line = None
+        if final and line.strip() == "Ok":
+            return None
+        self._emitted.append(line)
+        return line

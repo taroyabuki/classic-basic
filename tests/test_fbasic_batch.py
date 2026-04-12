@@ -245,6 +245,11 @@ class FBasicBatchTests(unittest.TestCase):
         self.assertFalse(progress.observe(['PRINT "CBATCHBEGIN"', "CBATCHBEGIN", "Ready", "RUN"]))
         self.assertTrue(progress.observe(['PRINT "CBATCHBEGIN"', "CBATCHBEGIN", "Ready", "RUN", "FOUND 16", "Ready"]))
 
+    def test_extract_output_lines_keeps_numeric_output_without_marker(self) -> None:
+        lines = [" 229", " 230", " 231"]
+
+        self.assertEqual(extract_output_lines(lines, lines), lines)
+
     def test_run_batch_reads_fm77av_output_from_headless_interactive_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
@@ -305,7 +310,7 @@ class FBasicBatchTests(unittest.TestCase):
                 )
 
             self.assertEqual(exit_code, 0)
-            print_mock.assert_called_once_with("HELLO")
+            print_mock.assert_called_once_with("HELLO", flush=True)
             self.assertIn('PRINT "CBATCHBEGIN"\nRUN\n', queued_input["text"])
 
     def test_run_batch_waits_for_post_run_ready_before_printing_fm77av_output(self) -> None:
@@ -372,7 +377,7 @@ class FBasicBatchTests(unittest.TestCase):
                 )
 
             self.assertEqual(exit_code, 0)
-            print_mock.assert_called_once_with("FOUND 16")
+            print_mock.assert_called_once_with("FOUND 16", flush=True)
 
     def test_build_fm7_interactive_lua_posts_single_enter_per_line(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -295,7 +295,7 @@ def is_source_listing_line(text: str) -> bool:
         return False
     body = match.group(1).upper()
     if not body:
-        return True
+        return False
     if any(keyword in body for keyword in _SOURCE_LISTING_KEYWORDS):
         return True
     if any(token in body for token in ("=", "+", "-", "*", "/", "(", ")", '"', "<", ">")):
@@ -303,6 +303,22 @@ def is_source_listing_line(text: str) -> bool:
     if re.search(r"\b[A-Z]\b", body) is not None:
         return True
     return False
+
+
+def is_startup_banner_line(text: str) -> bool:
+    stripped = text.strip()
+    upper = stripped.upper()
+    if not stripped:
+        return False
+    if upper.startswith("FUJITSU F-BASIC VERSION"):
+        return True
+    if upper.startswith("NEC N-88 BASIC VERSION"):
+        return True
+    if upper.startswith("COPYRIGHT"):
+        return True
+    if upper == "ALL RIGHT RESERVED":
+        return True
+    return re.fullmatch(r"\d+\s+BYTES\s+FREE", upper) is not None
 
 
 def _extract_output_lines_from_candidate(lines: list[str]) -> list[str]:
@@ -335,6 +351,7 @@ def _extract_output_lines_from_candidate(lines: list[str]) -> list[str]:
                 or is_batch_marker_line(line)
                 or is_run_line(line)
                 or is_ready_line(line)
+                or is_startup_banner_line(line)
                 or is_source_listing_line(line)
                 or re.fullmatch(r"[_\W]+", line) is not None
             ):
@@ -356,6 +373,7 @@ def _extract_output_lines_from_candidate(lines: list[str]) -> list[str]:
             or is_batch_marker_line(line)
             or is_run_line(line)
             or is_ready_line(line)
+            or is_startup_banner_line(line)
             or is_source_listing_line(line)
             or re.fullmatch(r"[_\W]+", line) is not None
         ):
@@ -513,6 +531,7 @@ def _wait_for_fm7_snapshot(
     output_path: Path,
     settle_seconds: float,
     predicate: Callable[[list[str]], bool],
+    on_snapshot: Callable[[list[str]], None] | None,
     command: list[str],
     timeout_seconds: float | None,
     deadline: float | None,
@@ -523,7 +542,10 @@ def _wait_for_fm7_snapshot(
 
     while True:
         snapshot = _read_text_capture_lines(output_path)
-        if predicate(snapshot):
+        predicate_matched = predicate(snapshot)
+        if on_snapshot is not None:
+            on_snapshot(snapshot)
+        if predicate_matched:
             if snapshot != previous_snapshot:
                 previous_snapshot = list(snapshot)
                 stable_since = time.monotonic()
@@ -559,6 +581,7 @@ def _run_fm7_batch_capture(
     program_lines: list[str],
     temp_dir: Path,
     timeout_seconds: float | None,
+    emit_lines: Callable[[list[str]], None] | None = None,
 ) -> list[str]:
     command = [mame_command, driver]
     deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
@@ -582,12 +605,25 @@ def _run_fm7_batch_capture(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    previous_output_lines: list[str] = []
+
+    def _emit_snapshot_output(snapshot: list[str]) -> None:
+        nonlocal previous_output_lines
+        if emit_lines is None:
+            return
+        current_output_lines = extract_output_lines(snapshot, snapshot)
+        diff_lines = _emit_console_diff(previous_output_lines, current_output_lines)
+        if diff_lines:
+            emit_lines(diff_lines)
+        previous_output_lines = current_output_lines
+
     try:
         return _wait_for_fm7_snapshot(
             proc=proc,
             output_path=output_path,
             settle_seconds=_fm7_default_settle_seconds(driver, phase="run"),
             predicate=progress.observe,
+            on_snapshot=_emit_snapshot_output,
             command=command,
             timeout_seconds=timeout_seconds,
             deadline=deadline,
@@ -1409,6 +1445,13 @@ def run_batch(
         lua_path = temp_dir / "capture.lua"
         output_lines: list[str] = []
         if driver in {"fm7", "fm77av"}:
+            fm7_emitted_output: list[str] = []
+
+            def _emit_fm7_lines(lines: list[str]) -> None:
+                for line in lines:
+                    print(line, flush=True)
+                fm7_emitted_output.extend(lines)
+
             captured_lines = _run_fm7_batch_capture(
                 mame_command=mame_command,
                 rompath=rompath,
@@ -1418,8 +1461,11 @@ def run_batch(
                 program_lines=program_lines,
                 temp_dir=temp_dir,
                 timeout_seconds=timeout_seconds,
+                emit_lines=_emit_fm7_lines,
             )
             output_lines = extract_output_lines(captured_lines, captured_lines)
+            for line in _emit_console_diff(fm7_emitted_output, output_lines):
+                print(line, flush=True)
             if not captured_lines:
                 raise RuntimeError("unable to detect FM7 batch execution in console RAM")
         elif driver in {"pc8801mk2"}:
@@ -1508,7 +1554,7 @@ def run_batch(
             output_lines = _repair_output_lines(output_lines, string_literals)
         if any(is_input_prompt_line(line) for line in output_lines):
             raise UnsupportedProgramInputError("program input is not supported in --run mode")
-        if output_lines:
+        if output_lines and driver not in {"fm7", "fm77av"}:
             print("\n".join(output_lines))
         return 0
     finally:

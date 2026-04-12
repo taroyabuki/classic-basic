@@ -32,8 +32,34 @@ class Console(Protocol):
     def write_byte(self, value: int) -> None: ...
 
 
+class ByteWriter(Protocol):
+    def write(self, data: bytes) -> object: ...
+
+
 class UnsupportedMonitorCall(RuntimeError):
     """Raised when the emulated monitor call is not implemented."""
+
+
+def _broken_pipe_exit_code() -> int:
+    try:
+        sys.stdout.flush()
+    except BrokenPipeError:
+        pass
+    except OSError:
+        return 141
+    else:
+        return 141
+    try:
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        return 141
+    try:
+        os.dup2(devnull_fd, sys.stdout.fileno())
+    except OSError:
+        pass
+    finally:
+        os.close(devnull_fd)
+    return 141
 
 
 @dataclass(frozen=True)
@@ -48,7 +74,7 @@ class SessionConsole:
         self,
         staged_input: bytes = b"",
         terminal: RawTerminal | None = None,
-        output_buffer: io.BytesIO | None = None,
+        output_buffer: ByteWriter | None = None,
     ) -> None:
         self._buffer = deque(staged_input)
         self._terminal = terminal
@@ -99,6 +125,48 @@ class SessionConsole:
         if value in (0x08, 0x7F):
             return 0x5F
         return value
+
+
+class StreamingFileRunOutput:
+    def __init__(self, stream: io.TextIOBase) -> None:
+        self._stream = stream
+        self._line = bytearray()
+        self._saw_run = False
+        self._pending_line: str | None = None
+
+    def write(self, data: bytes) -> int:
+        for value in data:
+            if value in (0x0A, 0x0D):
+                self._finish_line()
+            else:
+                self._line.append(value & 0x7F)
+        return len(data)
+
+    def finish(self) -> None:
+        self._finish_line()
+        self._flush_pending(final=True)
+
+    def _finish_line(self) -> None:
+        text = self._line.decode("ascii", errors="replace").rstrip()
+        self._line.clear()
+        if not self._saw_run:
+            if text.strip().upper() == "RUN":
+                self._saw_run = True
+            return
+        if not text.strip():
+            return
+        self._flush_pending()
+        self._pending_line = text
+
+    def _flush_pending(self, *, final: bool = False) -> None:
+        if self._pending_line is None:
+            return
+        if final and self._pending_line.strip().upper() == "OK":
+            self._pending_line = None
+            return
+        self._stream.write(f"{self._pending_line}\n")
+        self._stream.flush()
+        self._pending_line = None
 
 
 class OsiBasicMachine:
@@ -294,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
     stdin_bytes = b""
     terminal: RawTerminal | None = None
     terminal_manager: RawTerminal | None = None
-    batch_output: io.BytesIO | None = None
+    batch_output: StreamingFileRunOutput | None = None
 
     if use_terminal:
         terminal_manager = RawTerminal()
@@ -303,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
         stdin_bytes = sys.stdin.buffer.read()
 
     if args.program is not None and not args.interactive and args.exec_text is None:
-        batch_output = io.BytesIO()
+        batch_output = StreamingFileRunOutput(sys.stdout)
 
     try:
         console = SessionConsole(
@@ -319,6 +387,12 @@ def main(argv: list[str] | None = None) -> int:
             output_buffer=batch_output,
         )
         result = OsiBasicMachine(args.rom).run(console=console, max_steps=args.max_steps)
+    except BrokenPipeError:
+        return _broken_pipe_exit_code()
+    except KeyboardInterrupt:
+        if isinstance(batch_output, StreamingFileRunOutput):
+            batch_output.finish()
+        return 130
     except (FileNotFoundError, UnsupportedMonitorCall, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -333,12 +407,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    if batch_output is not None:
-        filtered = _filter_file_run_output(batch_output.getvalue().decode("ascii", errors="replace"))
-        if filtered:
-            sys.stdout.write(filtered)
-            sys.stdout.flush()
-
+    if isinstance(batch_output, StreamingFileRunOutput):
+        try:
+            batch_output.finish()
+        except BrokenPipeError:
+            return _broken_pipe_exit_code()
     return 0
 
 

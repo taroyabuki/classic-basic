@@ -118,19 +118,17 @@ if [[ -n "${file_path}" ]]; then
     rm -f "${runtime_dir}/AUTOEXEC.TXT"
   ) &
   if [[ -n "${timeout_spec}" ]]; then
-    CLASSIC_BASIC_RUNCPM_BATCH_TIMEOUT="${timeout_spec}" python3 "${ROOT_DIR}/src/runcpm_batch_exit.py" \
-      --runtime "${runtime_dir}" \
-      --intermediate-prompt "Ok" \
-      --intermediate-command "SYSTEM" \
-      --output-filter basic80
-  else
-    python3 "${ROOT_DIR}/src/runcpm_batch_exit.py" \
+    exec env CLASSIC_BASIC_RUNCPM_BATCH_TIMEOUT="${timeout_spec}" python3 "${ROOT_DIR}/src/runcpm_batch_exit.py" \
       --runtime "${runtime_dir}" \
       --intermediate-prompt "Ok" \
       --intermediate-command "SYSTEM" \
       --output-filter basic80
   fi
-  exit $?
+  exec python3 "${ROOT_DIR}/src/runcpm_batch_exit.py" \
+    --runtime "${runtime_dir}" \
+    --intermediate-prompt "Ok" \
+    --intermediate-command "SYSTEM" \
+    --output-filter basic80
 fi
 if [[ -t 0 ]]; then
   exec python3 -m basic80_interactive --runtime "${runtime_dir}"

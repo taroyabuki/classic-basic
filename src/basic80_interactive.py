@@ -160,7 +160,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     startup_command = args.startup_command.encode("ascii") if args.startup_command else None
-    return _run_bridge(runtime_dir=Path(args.runtime), startup_command=startup_command)
+    try:
+        return _run_bridge(runtime_dir=Path(args.runtime), startup_command=startup_command)
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":

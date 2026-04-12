@@ -7,6 +7,7 @@ import signal
 import stat
 import io
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
@@ -17,6 +18,7 @@ from unittest.mock import patch
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 RUNNER = ROOT_DIR / "run" / "n88basic.sh"
+sys.path.insert(0, str(ROOT_DIR / "src"))
 
 
 def _write_executable(path: Path, content: str) -> None:
@@ -87,6 +89,17 @@ class N88BasicRunnerTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(log_path.read_text(encoding="ascii").strip(), "-m n88basic_cli")
+
+    def test_cli_main_returns_130_on_keyboard_interrupt(self) -> None:
+        import n88basic_cli
+
+        with patch.object(n88basic_cli.N88BasicCLI, "run_interactive", side_effect=KeyboardInterrupt):
+            with patch.object(n88basic_cli, "_resolve_quasi88_bin", return_value=Path(__file__)):
+                with patch.object(n88basic_cli, "_resolve_rom_dir", return_value=ROOT_DIR):
+                    with patch.object(n88basic_cli, "_missing_required_rom_groups", return_value=[]):
+                        result = n88basic_cli.main([])
+
+        self.assertEqual(result, 130)
 
     def test_file_flag_loads_program_interactively(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -620,7 +633,7 @@ class N88BasicRunnerTests(unittest.TestCase):
         )
 
         cli = N88BasicCLI()
-        cli._capture_run_screen_state = lambda _session: next(states)  # type: ignore[method-assign]
+        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False: next(states)  # type: ignore[method-assign]
 
         completed, output_lines = cli._poll_run_completion(_Session(), timeout_seconds=1.0)
 
@@ -662,7 +675,7 @@ class N88BasicRunnerTests(unittest.TestCase):
         )
 
         cli = N88BasicCLI()
-        cli._capture_run_screen_state = lambda _session: next(states)  # type: ignore[method-assign]
+        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False: next(states)  # type: ignore[method-assign]
 
         completed, output_lines = cli._poll_run_completion(_Session(), timeout_seconds=1.0)
 
@@ -674,6 +687,107 @@ class N88BasicRunnerTests(unittest.TestCase):
                 "2.141592653589793",
                 "3.14159265358979323846#",
                 "2.141592653589793",
+            ],
+        )
+
+    def test_poll_run_completion_completes_after_run_scrolls_off_screen(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        class _Session:
+            def wait(self, _timeout_ms: int) -> None:
+                return None
+
+        states = iter(
+            [
+                {
+                    "lines": ["RUN", "BEST", "0", "3.14159265358979323#", "1.110223024625157D-16", "3.14"],
+                    "output_lines": ["BEST", "0", "3.14159265358979323#", "1.110223024625157D-16", "3.14"],
+                    "completed": False,
+                    "saw_run_prompt": True,
+                },
+                {
+                    "lines": [
+                        "0",
+                        "3.14159265358979323#",
+                        "1.110223024625157D-16",
+                        "3.14159265358979323846#",
+                        "1.110223024625157D-16",
+                        "Ok",
+                    ],
+                    "output_lines": [
+                        "0",
+                        "3.14159265358979323#",
+                        "1.110223024625157D-16",
+                        "3.14159265358979323846#",
+                        "1.110223024625157D-16",
+                    ],
+                    "completed": True,
+                    "saw_run_prompt": True,
+                },
+                {
+                    "lines": [
+                        "0",
+                        "3.14159265358979323#",
+                        "1.110223024625157D-16",
+                        "3.14159265358979323846#",
+                        "1.110223024625157D-16",
+                        "Ok",
+                    ],
+                    "output_lines": [
+                        "0",
+                        "3.14159265358979323#",
+                        "1.110223024625157D-16",
+                        "3.14159265358979323846#",
+                        "1.110223024625157D-16",
+                    ],
+                    "completed": True,
+                    "saw_run_prompt": True,
+                },
+            ]
+        )
+
+        cli = N88BasicCLI()
+        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False: next(states)  # type: ignore[method-assign]
+
+        completed, output_lines = cli._poll_run_completion(_Session(), timeout_seconds=1.0)
+
+        self.assertTrue(completed)
+        self.assertEqual(
+            output_lines,
+            [
+                "BEST",
+                "0",
+                "3.14159265358979323#",
+                "1.110223024625157D-16",
+                "3.14159265358979323846#",
+                "1.110223024625157D-16",
+            ],
+        )
+
+    def test_capture_run_screen_state_keeps_completion_after_run_scrolls_off(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        cli = N88BasicCLI()
+        cli._capture_run_screen_lines = lambda _session: [  # type: ignore[method-assign]
+            "0",
+            "3.14159265358979323#",
+            "1.110223024625157D-16",
+            "3.14159265358979323846#",
+            "1.110223024625157D-16",
+            "Ok",
+        ]
+
+        state = cli._capture_run_screen_state(object(), saw_run_prompt=True)
+
+        self.assertTrue(state["completed"])
+        self.assertEqual(
+            state["output_lines"],
+            [
+                "0",
+                "3.14159265358979323#",
+                "1.110223024625157D-16",
+                "3.14159265358979323846#",
+                "1.110223024625157D-16",
             ],
         )
 
@@ -904,6 +1018,26 @@ class N88BasicRunnerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn("program input is not supported in --run mode", result.stderr)
+
+    def test_run_file_completes_after_run_scrolls_off_screen(self) -> None:
+        rom_dir = ROOT_DIR / "downloads" / "n88basic" / "roms"
+        quasi88_bin = ROOT_DIR / "vendor" / "quasi88" / "quasi88.sdl2"
+        if not rom_dir.is_dir() or not quasi88_bin.is_file():
+            self.skipTest("N88-BASIC runtime is not available")
+
+        program = ROOT_DIR / "tests" / "data" / "n88basic_run_scroll_completion_probe.bas"
+        result = subprocess.run(
+            ["bash", str(RUNNER), "--run", "--file", str(program)],
+            cwd=ROOT_DIR,
+            env=self._runtime_env(),
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("3.14159265358979323#", result.stdout)
+        self.assertIn("3.14159265358979323846#", result.stdout)
 
 
 if __name__ == "__main__":

@@ -88,6 +88,22 @@ class GwBasicInteractiveTests(unittest.TestCase):
         self.assertNotIn("__CLASSIC_BASIC_BEGIN_", stdout.getvalue())
         self.assertEqual(shell.direct_history, ["A=4*ATN(1)", "PRINT A"])
 
+    def test_text_shell_returns_130_on_keyboard_interrupt(self) -> None:
+        import gwbasic_interactive
+
+        shell = gwbasic_interactive.GwBasicTextShell(
+            archive_path="archive.7z",
+            runtime_dir="/tmp/runtime",
+            home_dir="/tmp/home",
+            file_path=None,
+        )
+
+        stdout = io.StringIO()
+        with patch("builtins.input", side_effect=KeyboardInterrupt), patch("sys.stdout", stdout):
+            result = shell.run()
+
+        self.assertEqual(result, 130)
+
     def test_plain_interactive_launch_uses_text_shell_and_exits_on_ctrl_d(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)

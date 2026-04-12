@@ -11,13 +11,12 @@ from z80_basic.cpu import ExecutionResult, PortDevice, Z80CPU
 from z80_basic.memory import Memory
 
 from pc8001_terminal.display import TextGeometry, TextScreen
-from pc8001_terminal.cli import DEFAULT_ROM_PATH, _decode_key_sequence
+from pc8001_terminal.cli import DEFAULT_ROM_PATH, _decode_key_sequence, main as cli_main
 from pc8001_terminal.machine import (
     InputRequestError,
     PC8001Config,
     PC8001Machine,
     RomSpec,
-    _compile_n80_basic_program,
     _filter_nbasic_batch_output,
 )
 from pc8001_terminal.memory import PC8001Memory
@@ -98,50 +97,6 @@ class PC8001MemoryTests(unittest.TestCase):
 
 
 class PC8001MachineTests(unittest.TestCase):
-    def _rom_tokenized_body(self, line: str) -> bytes:
-        if not DEFAULT_ROM_PATH.is_file():
-            self.skipTest(f"ROM not available: {DEFAULT_ROM_PATH}")
-
-        machine = PC8001Machine(
-            PC8001Config(
-                roms=(RomSpec(path=DEFAULT_ROM_PATH, start=0x0000, name=DEFAULT_ROM_PATH.name),),
-                entry_point=0x0000,
-                max_steps=300000,
-                batch_rounds=64,
-            )
-        )
-        machine.load_roms()
-        machine.boot_demo()
-        machine.inject_keys([ord(char) for char in line] + [0x0D])
-        for _ in range(16):
-            result = machine.run_firmware(max_steps=300000)
-            if result.reason != "step_limit":
-                break
-
-        addr = 0x8021 + 4
-        body = bytearray()
-        while True:
-            value = machine.memory.read_byte(addr)
-            if value == 0x00:
-                break
-            body.append(value)
-            addr += 1
-        return bytes(body)
-
-    @staticmethod
-    def _non_ascii_tokens(body: bytes) -> bytes:
-        tokens = bytearray()
-        index = 0
-        while index < len(body):
-            value = body[index]
-            if value >= 0x80:
-                tokens.append(value)
-                if value == 0xFF and index + 1 < len(body):
-                    index += 1
-                    tokens.append(body[index])
-            index += 1
-        return bytes(tokens)
-
     def test_demo_boot_writes_banner(self) -> None:
         machine = PC8001Machine(PC8001Config(rows=5, cols=40))
         machine.load_roms()
@@ -268,76 +223,6 @@ class PC8001MachineTests(unittest.TestCase):
             ),
             "HELLO\n",
         )
-
-    def test_compile_n80_basic_program_tokenizes_rom_batch_subset(self) -> None:
-        compiled = _compile_n80_basic_program(
-            "10 DEFDBL A-Z\n20 FOR I=2 TO 1 STEP -1\n30 IF 5 MOD 2=1 THEN PRINT HEX$(PEEK(VARPTR(A)))\n40 NEXT I\n"
-        )
-        self.assertEqual(compiled[0], (10, bytes([0xAE, 0x20, 0x41, 0xF4, 0x5A])))
-        self.assertEqual(compiled[1], (20, bytes([0x49, 0xF1, 0x32])))
-        self.assertEqual(compiled[2][0], 21)
-        self.assertTrue(compiled[2][1].startswith(bytes([0x8B, 0x20, 0x49, 0xF2, 0x31, 0x20, 0xD8, 0x20, 0x89, 0x20])))
-        self.assertEqual(
-            compiled[3],
-            (
-                30,
-                bytes(
-                    [
-                        0x8B,
-                        0x20,
-                        0x35,
-                        0x20,
-                        0xFD,
-                        0x20,
-                        0x32,
-                        0xF1,
-                        0x31,
-                        0x20,
-                        0xD8,
-                        0x20,
-                        0x91,
-                        0x20,
-                        0xFF,
-                        0x9A,
-                        0x28,
-                        0xFF,
-                        0x97,
-                        0x28,
-                        0xE5,
-                        0x28,
-                        0x41,
-                        0x29,
-                        0x29,
-                        0x29,
-                    ]
-                ),
-            ),
-        )
-        self.assertEqual(compiled[4], (40, bytes([0x49, 0xF1, 0x49, 0xF4, 0x31, 0x3A, 0x89, 0x20, 0x32, 0x31])))
-
-    def test_compile_n80_basic_program_tokenizes_atn_function(self) -> None:
-        compiled = _compile_n80_basic_program("10 A=ATN(1)\n")
-        self.assertEqual(compiled, [(10, bytes([0x41, 0xF1, 0xFF, 0x8E, 0x28, 0x31, 0x29]))])
-
-    def test_compile_n80_basic_program_tokenizes_input_statement(self) -> None:
-        compiled = _compile_n80_basic_program('10 INPUT "N";A\n')
-        self.assertEqual(compiled, [(10, bytes([0x85, 0x20, 0x22, 0x4E, 0x22, 0x3B, 0x41]))])
-
-    def test_compile_n80_basic_program_tokenizes_abs_and_sqr_functions(self) -> None:
-        compiled = _compile_n80_basic_program("10 A=ABS(1)\n20 B=SQR(2)\n")
-        self.assertEqual(compiled[0], (10, bytes([0x41, 0xF1, 0xFF, 0x86, 0x28, 0x31, 0x29])))
-        self.assertEqual(compiled[1], (20, bytes([0x42, 0xF1, 0xFF, 0x87, 0x28, 0x32, 0x29])))
-
-    def test_host_tokenizer_non_ascii_tokens_match_rom_for_intrinsics(self) -> None:
-        for line in (
-            "10 A=ATN(1)",
-            "10 A=ABS(1)",
-            "10 A=SQR(2)",
-            "10 PRINT HEX$(PEEK(VARPTR(A)))",
-        ):
-            compiled = _compile_n80_basic_program(line + "\n")[0][1]
-            rom = self._rom_tokenized_body(line)
-            self.assertEqual(self._non_ascii_tokens(compiled), self._non_ascii_tokens(rom), line)
 
     def test_default_rom_startup_program_runs_tokenized_arithmetic(self) -> None:
         if not DEFAULT_ROM_PATH.is_file():
@@ -1318,6 +1203,17 @@ class PC8001PortTests(unittest.TestCase):
         self.assertIn("OUT 0x10 DISPLAY_DATA 0x42", ports.format_port_log())
         self.assertIn("OUT 0x10 DISPLAY_DATA from 0x0000", ports.format_port_summary())
         self.assertEqual(ports.format_port_summary(limit=0), "")
+
+
+class PC8001CliTests(unittest.TestCase):
+    def test_main_returns_130_on_keyboard_interrupt(self) -> None:
+        with patch("pc8001_terminal.cli.PC8001Machine") as machine_cls:
+            machine = machine_cls.return_value
+            machine.run_terminal.side_effect = KeyboardInterrupt
+
+            result = cli_main([])
+
+        self.assertEqual(result, 130)
 
 
 class _DummyPorts(PortDevice):

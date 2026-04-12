@@ -119,22 +119,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    with OpenMSXBridge(machine=machine, extra_rom_path=extra_rom_path) as bridge:
-        if args.run_loaded and args.program is None:
-            print("error: --run-loaded requires PROGRAM.bas", file=sys.stderr)
-            return 2
-        if args.run_loaded and args.interactive:
-            print("error: --run-loaded cannot be combined with --interactive", file=sys.stderr)
-            return 2
-        if args.run_loaded and args.program is not None:
-            return run_loaded_batch(bridge, args.program)
-        if args.interactive and args.program is not None:
-            loaded_program_lines = run_load(bridge, args.program)
-            run_interactive(bridge, loaded_program_lines=loaded_program_lines)
-        elif args.program is not None:
-            return run_batch(bridge, args.program)
-        else:
-            run_interactive(bridge)
+    try:
+        with OpenMSXBridge(machine=machine, extra_rom_path=extra_rom_path) as bridge:
+            if args.run_loaded and args.program is None:
+                print("error: --run-loaded requires PROGRAM.bas", file=sys.stderr)
+                return 2
+            if args.run_loaded and args.interactive:
+                print("error: --run-loaded cannot be combined with --interactive", file=sys.stderr)
+                return 2
+            if args.run_loaded and args.program is not None:
+                return run_loaded_batch(bridge, args.program)
+            if args.interactive and args.program is not None:
+                loaded_program_lines = run_load(bridge, args.program)
+                run_interactive(bridge, loaded_program_lines=loaded_program_lines)
+            elif args.program is not None:
+                return run_batch(bridge, args.program)
+            else:
+                run_interactive(bridge)
+    except KeyboardInterrupt:
+        return 130
 
     return 0
 

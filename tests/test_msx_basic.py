@@ -677,3 +677,12 @@ class MsxBasicCliTests(unittest.TestCase):
         self.assertEqual(result, 2)
         self.assertIn("--run-loaded cannot be combined with --interactive", stderr.getvalue())
         bridge_cls.assert_called_once()
+
+    def test_main_returns_130_on_keyboard_interrupt(self) -> None:
+        with patch("msx_basic.cli.OpenMSXBridge") as bridge_cls:
+            with patch("msx_basic.cli._create_machine_config", return_value=("machine", Path("/tmp/config.xml"))):
+                with patch("msx_basic.cli.run_loaded_batch", side_effect=KeyboardInterrupt):
+                    result = main(["--rom", __file__, "--run-loaded", "demo.bas"])
+
+        self.assertEqual(result, 130)
+        bridge_cls.assert_called_once()

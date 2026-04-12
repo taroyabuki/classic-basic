@@ -61,7 +61,9 @@ class GrantsBasicCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(stdout.getvalue(), "42\n")
         machine.boot.assert_called_once_with()
-        machine.run_program_file.assert_called_once_with(Path("demo.bas"))
+        machine.run_program_file.assert_called_once()
+        self.assertEqual(machine.run_program_file.call_args.args, (Path("demo.bas"),))
+        self.assertIn("emit_output", machine.run_program_file.call_args.kwargs)
         machine.run_terminal.assert_not_called()
 
     def test_short_run_file_writes_stdout_and_does_not_enter_terminal(self) -> None:
@@ -75,7 +77,9 @@ class GrantsBasicCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(stdout.getvalue(), "42\n")
         machine.boot.assert_called_once_with()
-        machine.run_program_file.assert_called_once_with(Path("demo.bas"))
+        machine.run_program_file.assert_called_once()
+        self.assertEqual(machine.run_program_file.call_args.args, (Path("demo.bas"),))
+        self.assertIn("emit_output", machine.run_program_file.call_args.kwargs)
         machine.run_terminal.assert_not_called()
 
     def test_run_requires_file(self) -> None:
@@ -94,6 +98,15 @@ class GrantsBasicCliTests(unittest.TestCase):
 
         self.assertEqual(result, 2)
         self.assertIn("error: interactive input is unsupported", stderr.getvalue())
+
+    def test_main_returns_130_on_keyboard_interrupt(self) -> None:
+        with patch("grants_basic.cli.GrantSearleMachine") as machine_cls:
+            machine = machine_cls.return_value
+            machine.run_terminal.side_effect = KeyboardInterrupt
+
+            result = main([])
+
+        self.assertEqual(result, 130)
 
     def test_step_budget_flags_flow_into_machine_config(self) -> None:
         with patch("grants_basic.cli.GrantSearleMachine") as machine_cls:

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import fbasic_batch
@@ -31,10 +32,12 @@ BASE_WINE_PREFIX_LOCK = CACHE_ROOT / "wine-prefix-base.lock"
 FAST_STARTUP_ANSWER_DELAY = 0.15
 FAST_STARTUP_READY_TIMEOUT = 5.0
 STARTUP_POLL_DELAY = 0.2
+RUN_OUTPUT_POLL_DELAY = 0.2
 LOAD_BATCH_SIZE = 3
 LARGE_LOAD_BATCH_SIZE = 5
 LOAD_BATCH_DELAY = 0.15
 FAST_LOADER_MAX_LINES = 12
+INPUT_PASTE_CHUNK_SIZE = 20
 
 
 class BasicRuntimeError(RuntimeError):
@@ -47,6 +50,43 @@ class BasicTimeoutError(BasicRuntimeError):
 
 class FastLoadFallbackRequired(BasicRuntimeError):
     pass
+
+
+def _broken_pipe_exit_code() -> int:
+    try:
+        sys.stdout.flush()
+    except BrokenPipeError:
+        pass
+    except OSError:
+        return 141
+    else:
+        return 141
+    try:
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        return 141
+    try:
+        os.dup2(devnull_fd, sys.stdout.fileno())
+    except OSError:
+        pass
+    finally:
+        os.close(devnull_fd)
+    return 141
+
+
+def _parent_death_preexec_fn() -> Callable[[], None] | None:
+    if not sys.platform.startswith("linux"):
+        return None
+
+    def _set_parent_death_signal() -> None:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
+            err = ctypes.get_errno()
+            raise OSError(err, os.strerror(err))
+
+    return _set_parent_death_signal
 
 
 def require_tool(name: str) -> None:
@@ -104,6 +144,15 @@ def _screen_has_ready_prompt(screen: str) -> bool:
     return "\nReady" in screen or screen.strip().endswith("Ready")
 
 
+def _screen_lines_have_ready_prompt(lines: list[str]) -> bool:
+    for line in reversed(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        return stripped == "Ready"
+    return False
+
+
 def _startup_prompt_index(screen: str, prompts: tuple[str, ...]) -> int | None:
     return next((index for index, prompt in enumerate(prompts) if prompt in screen), None)
 
@@ -118,266 +167,13 @@ def _merge_screen_suffix(previous_lines: list[str], current_lines: list[str]) ->
     return current_lines
 
 
-_BASIC_LINE_RE = re.compile(r"^\s*(\d+)\s*(.*)$")
-_BASIC_BRANCH_TARGET_RE = re.compile(r"\b(GOTO|GOSUB|THEN)\s+(\d+)\b", re.IGNORECASE)
-_IF_THEN_RE = re.compile(r"^\s*IF\s+(.+?)\s+THEN\s+(.+)\s*$", re.IGNORECASE)
-_BASIC_VARIABLE_RE = re.compile(r"(?<![A-Z0-9])([A-Z][A-Z0-9]*[$%!#]?)(?![A-Z0-9])", re.IGNORECASE)
-_LOCAL_NEXT_PLACEHOLDER = "__CLASSIC_BASIC_LOCAL_NEXT__"
-_ORIGINAL_NEXT_PLACEHOLDER = "__CLASSIC_BASIC_ORIGINAL_NEXT__"
-_RELATIONAL_OPERATORS = ("<>", "<=", ">=", "=", "<", ">")
-
-
-def _iter_temp_variable_candidates():
-    for suffix in ("", *(str(index) for index in range(10))):
-        for letter in "ZYXWVUTSRQPONMLKJIHGFEDCBA":
-            yield f"{letter}{suffix}#"
-
-
-def _reserve_temp_variables(source: str, *, count: int) -> tuple[str, ...]:
-    used = {match.group(1).upper() for match in _BASIC_VARIABLE_RE.finditer(source.upper())}
-    reserved: list[str] = []
-    for candidate in _iter_temp_variable_candidates():
-        upper_candidate = candidate.upper()
-        if upper_candidate in used or upper_candidate in reserved:
-            continue
-        reserved.append(upper_candidate)
-        if len(reserved) == count:
-            return tuple(reserved)
-    raise BasicRuntimeError("unable to reserve temporary FM-11 variables")
-
-
-def _split_fm11_statements(body: str, *, max_body_length: int) -> list[str]:
-    statements: list[str] = []
-    current: list[str] = []
-    in_string = False
-    for char in body:
-        if char == '"':
-            in_string = not in_string
-        if char == ":" and not in_string:
-            statements.append("".join(current).strip())
-            current = []
-            continue
-        current.append(char)
-    statements.append("".join(current).strip())
-    statements = [statement for statement in statements if statement]
-    if len(statements) <= 1:
-        return [body.strip()]
-
-    normalized_statements: list[str] = []
-    previous_if_condition: str | None = None
-    for statement in statements:
-        if previous_if_condition is not None:
-            normalized_statements.append(f"IF {previous_if_condition} THEN {statement}")
-            continue
-
-        normalized_statements.append(statement)
-        if_match = _IF_THEN_RE.match(statement)
-        if if_match is not None:
-            previous_if_condition = if_match.group(1).strip()
-
-    segments: list[str] = []
-    current_segment = ""
-    for statement in normalized_statements:
-        candidate = statement if not current_segment else f"{current_segment}:{statement}"
-        if current_segment and len(candidate) > max_body_length:
-            segments.append(current_segment)
-            current_segment = statement
-        else:
-            current_segment = candidate
-    if current_segment:
-        segments.append(current_segment)
-    return segments
-
-
-def _expand_long_if_then_statement(
-    statement: str,
-    *,
-    max_body_length: int,
-) -> list[str]:
-    if len(statement) <= max(max_body_length, 24):
-        return [statement]
-    if_match = _IF_THEN_RE.match(statement)
-    if if_match is None:
-        return [statement]
-    condition = if_match.group(1).strip()
-    then_statement = if_match.group(2).strip()
-    if not then_statement or len(then_statement) > max_body_length:
-        return [statement]
-    return [
-        f"IF {condition} THEN GOTO {_LOCAL_NEXT_PLACEHOLDER}",
-        f"GOTO {_ORIGINAL_NEXT_PLACEHOLDER}",
-        then_statement,
-    ]
-
-
-def _project_fm11_statement_length(statement: str) -> int:
-    return len(
-        statement.replace(_LOCAL_NEXT_PLACEHOLDER, "9999").replace(_ORIGINAL_NEXT_PLACEHOLDER, "9999")
-    )
-
-
-def _split_if_condition_comparison(condition: str) -> tuple[str, str, str] | None:
-    matches: list[tuple[int, str]] = []
-    in_string = False
-    paren_depth = 0
-    index = 0
-    while index < len(condition):
-        char = condition[index]
-        if char == '"':
-            in_string = not in_string
-            index += 1
-            continue
-        if in_string:
-            index += 1
-            continue
-        if char == "(":
-            paren_depth += 1
-            index += 1
-            continue
-        if char == ")" and paren_depth > 0:
-            paren_depth -= 1
-            index += 1
-            continue
-        if paren_depth == 0:
-            operator = next(
-                (candidate for candidate in _RELATIONAL_OPERATORS if condition.startswith(candidate, index)),
-                None,
-            )
-            if operator is not None:
-                matches.append((index, operator))
-                index += len(operator)
-                continue
-        index += 1
-    if len(matches) != 1:
-        return None
-    split_index, operator = matches[0]
-    lhs = condition[:split_index].strip()
-    rhs = condition[split_index + len(operator) :].strip()
-    if not lhs or not rhs:
-        return None
-    return lhs, operator, rhs
-
-
-def _split_long_comparison_if_statement(
-    statement: str,
-    *,
-    max_body_length: int,
-    temp_variables: tuple[str, str],
-) -> list[str]:
-    effective_max_body_length = max(max_body_length, 24)
-    if _project_fm11_statement_length(statement) <= effective_max_body_length:
-        return [statement]
-    if_match = _IF_THEN_RE.match(statement)
-    if if_match is None:
-        return [statement]
-    comparison = _split_if_condition_comparison(if_match.group(1).strip())
-    if comparison is None:
-        return [statement]
-    then_statement = if_match.group(2).strip()
-    if not then_statement:
-        return [statement]
-    left_expr, operator, right_expr = comparison
-    left_temp, right_temp = temp_variables
-    rewritten_if = f"IF {left_temp}{operator}{right_temp} THEN {then_statement}"
-    if _project_fm11_statement_length(rewritten_if) > effective_max_body_length:
-        return [statement]
-    return [
-        f"{left_temp}={left_expr}",
-        f"{right_temp}={right_expr}",
-        rewritten_if,
-    ]
+_SCREEN_SOURCE_LINE_RE = re.compile(r"^\d+\s+(.+)$")
 
 
 def preprocess_fm11_source(source: str, *, max_body_length: int = 24) -> str:
-    effective_max_body_length = max(max_body_length, 24)
-    temp_variables = _reserve_temp_variables(source, count=2)
-    raw_entries: list[tuple[int, list[str]]] = []
-    for raw_line in source.splitlines():
-        if not raw_line.strip():
-            continue
-        match = _BASIC_LINE_RE.match(raw_line)
-        if match is None:
-            raise BasicRuntimeError(f"expected line-numbered BASIC source, got: {raw_line!r}")
-        line_number = int(match.group(1))
-        body = match.group(2).strip()
-        raw_entries.append((line_number, _split_fm11_statements(body, max_body_length=max_body_length)))
-
-    entries: list[tuple[int, int | None, list[str]]] = []
-    for index, (line_number, statements) in enumerate(raw_entries):
-        next_original_number = raw_entries[index + 1][0] if index + 1 < len(raw_entries) else None
-        expanded_statements: list[str] = []
-        for statement in statements:
-            for shortened_statement in _split_long_comparison_if_statement(
-                statement,
-                max_body_length=max_body_length,
-                temp_variables=temp_variables,
-            ):
-                for candidate_statement in _expand_long_if_then_statement(
-                    shortened_statement,
-                    max_body_length=max_body_length,
-                ):
-                    expanded_statements.extend(
-                        _split_long_comparison_if_statement(
-                            candidate_statement,
-                            max_body_length=max_body_length,
-                            temp_variables=temp_variables,
-                        )
-                    )
-        entries.append((line_number, next_original_number, expanded_statements))
-
-    expanded: list[tuple[int, int, int | None, str]] = []
-    segment_line_numbers: dict[tuple[int, int], int] = {}
-    old_to_new: dict[int, int] = {}
-    next_number = 10
-    for original_number, next_original_number, segments in entries:
-        old_to_new[original_number] = next_number
-        for segment_index, segment in enumerate(segments):
-            segment_line_numbers[(original_number, segment_index)] = next_number
-            expanded.append((next_number, original_number, next_original_number, segment))
-            next_number += 10
-
-    def _rewrite_branch_targets(
-        body: str,
-        *,
-        original_number: int,
-        next_original_number: int | None,
-        segment_index: int,
-    ) -> str:
-        def repl(match: re.Match[str]) -> str:
-            keyword = match.group(1)
-            target = int(match.group(2))
-            return f"{keyword} {old_to_new.get(target, target)}"
-
-        body = _BASIC_BRANCH_TARGET_RE.sub(repl, body)
-        if _LOCAL_NEXT_PLACEHOLDER in body:
-            local_next = segment_line_numbers.get((original_number, segment_index + 2))
-            if local_next is None:
-                raise BasicRuntimeError(f"missing local target while preprocessing line {original_number}")
-            body = body.replace(_LOCAL_NEXT_PLACEHOLDER, str(local_next))
-        if _ORIGINAL_NEXT_PLACEHOLDER in body:
-            if next_original_number is None:
-                raise BasicRuntimeError(f"missing next line target while preprocessing line {original_number}")
-            body = body.replace(_ORIGINAL_NEXT_PLACEHOLDER, str(old_to_new.get(next_original_number, next_original_number)))
-        return body
-
-    segment_indexes: dict[int, int] = {}
-    lines = []
-    for line_number, original_number, next_original_number, body in expanded:
-        segment_index = segment_indexes.get(original_number, 0)
-        rewritten_body = _rewrite_branch_targets(
-            body,
-            original_number=original_number,
-            next_original_number=next_original_number,
-            segment_index=segment_index,
-        )
-        if len(rewritten_body) > effective_max_body_length:
-            raise BasicRuntimeError(
-                f"FM-11 preprocessing left line {original_number} too long: "
-                f"{line_number} {rewritten_body!r} ({len(rewritten_body)} > {effective_max_body_length})"
-            )
-        lines.append(f"{line_number} {rewritten_body}")
-        segment_indexes[original_number] = segment_index + 1
-    return "\n".join(lines) + "\n"
+    del max_body_length
+    normalized = source.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized if not normalized or normalized.endswith("\n") else normalized + "\n"
 
 
 def windows_path(path: Path) -> str:
@@ -441,6 +237,7 @@ class RuntimeSession:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            preexec_fn=_parent_death_preexec_fn(),
         )
         self.window_id = self._wait_for_window(deadline=deadline)
 
@@ -457,6 +254,7 @@ class RuntimeSession:
                     os.killpg(self.wine_proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+        self._shutdown_wine_services()
         if self.xvfb_proc is not None and self.xvfb_proc.poll() is None:
             self.xvfb_proc.terminate()
             try:
@@ -464,6 +262,19 @@ class RuntimeSession:
             except subprocess.TimeoutExpired:
                 self.xvfb_proc.kill()
         shutil.rmtree(self.tempdir, ignore_errors=True)
+
+    def _shutdown_wine_services(self) -> None:
+        try:
+            run_command(
+                ["wineserver", "-k"],
+                env=self.env,
+                capture_output=True,
+                check=False,
+                timeout_seconds=5.0,
+                timeout_error="timed out shutting down FM-11 wine services",
+            )
+        except BasicRuntimeError:
+            pass
 
     def _seed_registry(self, *, deadline: float | None = None) -> None:
         reg_base = r"HKCU\Software\Culti\FM11\FM11"
@@ -554,6 +365,7 @@ class RuntimeSession:
                 ["Xvfb", display, "-screen", "0", "1280x1024x24"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                preexec_fn=_parent_death_preexec_fn(),
             )
             _sleep_with_deadline(
                 STARTUP_POLL_DELAY,
@@ -765,11 +577,28 @@ def screen_appended_lines(before_lines, after_lines):
     return after_lines
 
 
+def _merge_output_window(previous_lines: list[str], current_lines: list[str]) -> tuple[list[str], int]:
+    if not previous_lines:
+        return current_lines, 0
+    max_overlap = min(len(previous_lines), len(current_lines))
+    for overlap in range(max_overlap, -1, -1):
+        previous_suffix = previous_lines[-overlap:] if overlap else []
+        for start in range(0, len(current_lines) - overlap + 1):
+            if overlap and previous_suffix != current_lines[start : start + overlap]:
+                continue
+            return current_lines[start + overlap :], overlap
+    return current_lines, 0
+
+
 def filter_new_lines(lines, sent_text: str):
-    echoed = {line for line in sent_text.replace("\r\n", "\n").replace("\r", "\n").split("\n") if line}
+    echoed = {
+        line.strip().upper()
+        for line in sent_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        if line
+    }
     filtered = []
     for line in lines:
-        if line in echoed:
+        if line.strip().upper() in echoed:
             continue
         if is_noise_line(line):
             continue
@@ -779,6 +608,64 @@ def filter_new_lines(lines, sent_text: str):
     while filtered and filtered[-1] == "":
         filtered.pop()
     return filtered
+
+
+def _looks_like_basic_source_line(line: str) -> bool:
+    match = _SCREEN_SOURCE_LINE_RE.match(line.strip())
+    if match is None:
+        return False
+    body = match.group(1).strip().upper()
+    if not re.search(r"[A-Z]", body):
+        return False
+    if body.startswith(("REM", "'")):
+        return True
+    if any(
+        keyword in body
+        for keyword in (
+            " IF ",
+            " THEN ",
+            " GOTO ",
+            " GOSUB ",
+            " PRINT ",
+            " FOR ",
+            " NEXT",
+            " END",
+            " RETURN",
+            " INPUT",
+            " READ",
+            " DATA",
+            " DIM ",
+            " DEF",
+            " ATN(",
+            " INT(",
+            " ABS(",
+        )
+    ):
+        return True
+    return re.fullmatch(r"[A-Z][A-Z0-9$%!#]*\s*=.*", body) is not None
+
+
+def _looks_like_garbage_run_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped == "LX":
+        return True
+    if stripped.startswith("LX") and stripped.endswith('"'):
+        return True
+    # FM-11 redraw artifacts tend to be a few short alnum fragments separated by
+    # wide gaps, often with a dangling quote from the screen edge.
+    groups = [group for group in re.split(r"\s{2,}", stripped.rstrip('"')) if group.strip()]
+    compact_groups = [re.sub(r"\s+", "", group) for group in groups]
+    if len(compact_groups) < 2:
+        return False
+    if any(len(group) > 3 for group in compact_groups):
+        return False
+    if stripped.endswith('"'):
+        return True
+    if any(not group.isalnum() for group in compact_groups):
+        return False
+    return any(char.islower() for char in stripped)
 
 
 def extract_marker_output_lines(lines, *, marker: str) -> list[str]:
@@ -800,11 +687,72 @@ def extract_marker_output_lines(lines, *, marker: str) -> list[str]:
     return output
 
 
+def _extract_run_output_lines(
+    lines: list[str],
+    *,
+    marker: str | None = None,
+    triggered: bool,
+    ignored_source_lines: set[str] | None = None,
+) -> tuple[list[str], bool]:
+    start = 0
+    latest_marker = None
+    if marker is not None:
+        for index, line in enumerate(lines):
+            if line.strip() == marker:
+                latest_marker = index
+        if latest_marker is not None:
+            triggered = True
+            start = latest_marker + 1
+
+    latest_run = None
+    for index in range(start, len(lines)):
+        if lines[index].strip() == "RUN":
+            latest_run = index
+    if latest_run is not None:
+        triggered = True
+        start = latest_run + 1
+
+    if not triggered:
+        return [], False
+
+    end = len(lines)
+    for index in range(start, len(lines)):
+        if lines[index].strip() == "Ready":
+            end = index
+            break
+
+    output: list[str] = []
+    for line in lines[start:end]:
+        stripped = line.strip()
+        normalized = stripped.upper()
+        if not stripped or normalized == "RUN" or normalized == "READY":
+            continue
+        if marker is not None and stripped == marker:
+            continue
+        if ignored_source_lines is not None and normalized in ignored_source_lines:
+            continue
+        if _looks_like_basic_source_line(line):
+            continue
+        if _looks_like_garbage_run_line(stripped):
+            continue
+        output.append(stripped)
+    return output, True
+
+
 def emit_lines(lines) -> None:
     if not lines:
         return
     sys.stdout.write("\n".join(lines) + "\n")
     sys.stdout.flush()
+
+
+def submit_line(session: RuntimeSession, line: str, *, deadline: float | None = None) -> None:
+    if not line:
+        session.key("Return", deadline=deadline)
+        return
+    for start in range(0, len(line), INPUT_PASTE_CHUNK_SIZE):
+        session.paste_text(line[start : start + INPUT_PASTE_CHUNK_SIZE], deadline=deadline)
+    session.key("Return", deadline=deadline)
 
 
 def interactive_startup_lines(screen_lines, source_text: str | None) -> list[str]:
@@ -857,11 +805,11 @@ def _load_source_conservative(
     optimize_for_run: bool,
 ) -> tuple[str, list[str]]:
     screen_lines = normalize_screen_text(raw_screen)
-    allow_offscreen_prompt = optimize_for_run and len(source_lines) > FAST_LOADER_MAX_LINES
+    allow_offscreen_prompt = len(source_lines) > FAST_LOADER_MAX_LINES
     prompt_visible = _screen_has_ready_prompt(raw_screen)
     for program_line in source_lines:
         before = raw_screen
-        session.paste_text(program_line + "\n", deadline=deadline)
+        submit_line(session, program_line, deadline=deadline)
         if allow_offscreen_prompt and not prompt_visible:
             raw_screen, screen_lines = _capture_loaded_line_without_prompt(
                 session,
@@ -926,7 +874,7 @@ def _load_source_batched(
         batch = source_lines[start : start + batch_size]
         before = raw_screen
         for index, program_line in enumerate(batch):
-            session.paste_text(program_line + "\n", deadline=deadline)
+            submit_line(session, program_line, deadline=deadline)
             if index + 1 != len(batch):
                 _sleep_with_deadline(
                     LOAD_BATCH_DELAY,
@@ -1000,68 +948,86 @@ def wait_for_ready(
     raise BasicTimeoutError("timed out waiting for BASIC prompt")
 
 
-def collect_run_output(
+def _resolve_wait_deadline(
+    timeout: float | None,
+    *,
+    deadline: float | None,
+    message: str,
+) -> float | None:
+    if timeout is None:
+        if deadline is None:
+            return None
+        _remaining_timeout(deadline, fallback=0.1, message=message)
+        return deadline
+    return _effective_deadline(timeout, deadline=deadline, message=message)
+
+
+def collect_command_output(
     session: RuntimeSession,
-    previous_lines,
+    previous_lines: list[str],
     sent_text: str,
-    timeout: float = 30.0,
-    marker: str | None = None,
+    timeout: float | None = 20.0,
     *,
     deadline: float | None = None,
-):
-    wait_deadline = _effective_deadline(
-        timeout,
-        deadline=deadline,
-        message="timed out waiting for BASIC program completion",
-    )
+    on_lines=None,
+    ignored_source_lines: set[str] | None = None,
+) -> tuple[str, list[str]]:
+    message = "timed out waiting for BASIC prompt"
+    wait_deadline = _resolve_wait_deadline(timeout, deadline=deadline, message=message)
     latest = previous_lines
-    emitted = []
-    seen = set(previous_lines)
-    previous_marker_lines: list[str] = []
-    marker_seen = False
+    raw_screen = ""
+    run_mode = any(line.strip().upper() == "RUN" for line in sent_text.replace("\r", "\n").split("\n") if line.strip())
+    previous_output_lines: list[str] = []
+    run_triggered = run_mode
+
     _sleep_with_deadline(
         0.2,
         deadline=wait_deadline,
-        message="timed out waiting for BASIC program completion",
+        message=message,
     )
     raw_screen = session.copy_screen(deadline=wait_deadline)
     latest = normalize_screen_text(raw_screen)
-    if marker is not None and any(line.strip() == marker for line in latest):
-        marker_seen = True
-        initial_lines = extract_marker_output_lines(latest, marker=marker)
-        for line in initial_lines:
-            if line not in previous_marker_lines:
-                emitted.append(line)
-        previous_marker_lines = initial_lines
+    if run_mode:
+        initial_lines, run_triggered = _extract_run_output_lines(
+            latest,
+            triggered=run_triggered,
+            ignored_source_lines=ignored_source_lines,
+        )
+        previous_output_lines = list(initial_lines)
     else:
         initial_lines = filter_new_lines(screen_appended_lines(previous_lines, latest), sent_text)
-        for line in initial_lines:
-            if line in seen:
-                continue
-            seen.add(line)
-            emitted.append(line)
+    if initial_lines and on_lines is not None:
+        on_lines(initial_lines)
     if _screen_has_ready_prompt(raw_screen):
-        return latest, emitted
+        if run_mode and on_lines is not None:
+            on_lines(["Ready"])
+        return raw_screen, latest
+
     stagnant_since = None
-    while time.monotonic() < wait_deadline:
+    while wait_deadline is None or time.monotonic() < wait_deadline:
         raw_screen = session.copy_screen(deadline=wait_deadline)
         current = normalize_screen_text(raw_screen)
         if current != latest:
-            if marker is not None and any(line.strip() == marker for line in current):
-                marker_seen = True
-            if marker is not None and marker_seen:
-                current_marker_lines = extract_marker_output_lines(current, marker=marker)
-                for line in _merge_screen_suffix(previous_marker_lines, current_marker_lines):
-                    if line:
-                        emitted.append(line)
-                previous_marker_lines = current_marker_lines
+            if run_mode:
+                current_output_lines, run_triggered = _extract_run_output_lines(
+                    current,
+                    triggered=run_triggered,
+                    ignored_source_lines=ignored_source_lines,
+                )
+                if not current_output_lines:
+                    latest = current
+                    stagnant_since = None
+                    continue
+                new_lines, overlap = _merge_output_window(previous_output_lines, current_output_lines)
+                if previous_output_lines and current_output_lines and overlap == 0:
+                    latest = current
+                    stagnant_since = None
+                    continue
+                previous_output_lines = current_output_lines
             else:
                 new_lines = filter_new_lines(screen_appended_lines(latest, current), sent_text)
-                for line in new_lines:
-                    if line in seen:
-                        continue
-                    seen.add(line)
-                    emitted.append(line)
+            if new_lines and on_lines is not None:
+                on_lines(new_lines)
             latest = current
             stagnant_since = None
         else:
@@ -1069,6 +1035,96 @@ def collect_run_output(
                 stagnant_since = time.monotonic()
 
         if _screen_has_ready_prompt(raw_screen):
+            if run_mode and on_lines is not None:
+                on_lines(["Ready"])
+            return raw_screen, current
+
+        if stagnant_since is not None and time.monotonic() - stagnant_since >= 3:
+            stripped_lines = [line.rstrip() for line in current if line.strip()]
+            if stripped_lines and stripped_lines[-1].endswith("?"):
+                raise BasicRuntimeError("program requested unsupported input during interactive execution")
+
+        _sleep_with_deadline(
+            0.2,
+            deadline=wait_deadline,
+            message=message,
+        )
+    raise BasicTimeoutError(message)
+
+
+def collect_run_output(
+    session: RuntimeSession,
+    previous_lines,
+    sent_text: str,
+    timeout: float | None = 30.0,
+    marker: str | None = None,
+    *,
+    deadline: float | None = None,
+    on_lines=None,
+):
+    wait_deadline = _resolve_wait_deadline(
+        timeout,
+        deadline=deadline,
+        message="timed out waiting for BASIC program completion",
+    )
+    latest = previous_lines
+    emitted = []
+    previous_output_lines: list[str] = []
+    triggered = any(line.strip().upper() == "RUN" for line in sent_text.replace("\r", "\n").split("\n") if line.strip())
+    _sleep_with_deadline(
+        RUN_OUTPUT_POLL_DELAY,
+        deadline=wait_deadline,
+        message="timed out waiting for BASIC program completion",
+    )
+    raw_screen = session.copy_screen(deadline=wait_deadline)
+    latest = normalize_screen_text(raw_screen)
+    previous_output_lines, triggered = _extract_run_output_lines(
+        latest,
+        marker=marker,
+        triggered=triggered,
+    )
+    emitted.extend(previous_output_lines)
+    if previous_output_lines and on_lines is not None:
+        on_lines(previous_output_lines)
+    if _screen_lines_have_ready_prompt(latest):
+        return latest, emitted
+
+    def process_output_lines(current_output_lines: list[str]) -> None:
+        nonlocal previous_output_lines, emitted
+        new_lines, overlap = _merge_output_window(previous_output_lines, current_output_lines)
+        if previous_output_lines and current_output_lines and overlap == 0:
+            new_lines = current_output_lines
+        for line in new_lines:
+            if line:
+                emitted.append(line)
+        if new_lines and on_lines is not None:
+            on_lines(new_lines)
+        previous_output_lines = current_output_lines
+
+    stagnant_since = None
+    while wait_deadline is None or time.monotonic() < wait_deadline:
+        raw_screen = session.copy_screen(deadline=wait_deadline)
+        current = normalize_screen_text(raw_screen)
+        current_changed = current != latest
+        current_output_lines: list[str] = []
+        if current_changed:
+            current_output_lines, triggered = _extract_run_output_lines(
+                current,
+                marker=marker,
+                triggered=triggered,
+            )
+            if not current_output_lines:
+                latest = current
+                stagnant_since = None
+            else:
+                process_output_lines(current_output_lines)
+            latest = current
+            stagnant_since = None
+        else:
+            if stagnant_since is None:
+                stagnant_since = time.monotonic()
+
+        if _screen_lines_have_ready_prompt(current):
             return current, emitted
 
         if stagnant_since is not None and time.monotonic() - stagnant_since >= 3:
@@ -1077,7 +1133,7 @@ def collect_run_output(
                 raise BasicRuntimeError("program requested unsupported input during --run execution")
 
         _sleep_with_deadline(
-            0.2,
+            RUN_OUTPUT_POLL_DELAY,
             deadline=wait_deadline,
             message="timed out waiting for BASIC program completion",
         )
@@ -1206,7 +1262,7 @@ def _run_basic_once(
 
         if args.run:
             before = raw_screen
-            session.paste_text("CLS\n", deadline=deadline)
+            submit_line(session, "CLS", deadline=deadline)
             try:
                 raw_screen = wait_for_ready(
                     session,
@@ -1223,31 +1279,49 @@ def _run_basic_once(
             except BasicRuntimeError:
                 raw_screen = session.copy_screen(deadline=deadline)
             screen_lines = normalize_screen_text(raw_screen)
-            session.paste_text("RUN\n", deadline=deadline)
+            submit_line(session, 'PRINT "CBATCHBEGIN"', deadline=deadline)
+            submit_line(session, "RUN", deadline=deadline)
             _, lines = collect_run_output(
                 session,
                 screen_lines,
-                "RUN\n",
-                timeout=_remaining_timeout(
+                'PRINT "CBATCHBEGIN"\nRUN\n',
+                timeout=None
+                if deadline is None
+                else _remaining_timeout(
                     deadline,
                     fallback=30.0,
                     message="timed out waiting for BASIC program completion",
                 ),
                 marker="CBATCHBEGIN",
                 deadline=deadline,
+                on_lines=emit_lines,
             )
-            emit_lines(lines)
             return 0
 
         for raw_line in sys.stdin:
             line = raw_line.rstrip("\n")
             before = raw_screen
             before_lines = screen_lines
-            session.paste_text(line + "\n", deadline=deadline)
-            raw_screen = wait_for_ready(session, before, timeout=20, deadline=deadline)
-            screen_lines = normalize_screen_text(raw_screen)
-            lines = filter_new_lines(screen_appended_lines(before_lines, screen_lines), line + "\n")
-            emit_lines(lines)
+            submit_line(session, line, deadline=deadline)
+            command_timeout: float | None = 20.0
+            ignored_source_lines: set[str] | None = None
+            if line.strip().upper() == "RUN":
+                command_timeout = None
+                if source_text is not None:
+                    ignored_source_lines = {
+                        source_line.strip().upper()
+                        for source_line in source_text.splitlines()
+                        if source_line.strip()
+                    }
+            raw_screen, screen_lines = collect_command_output(
+                session,
+                before_lines,
+                line + "\n",
+                timeout=command_timeout,
+                deadline=deadline,
+                on_lines=emit_lines,
+                ignored_source_lines=ignored_source_lines,
+            )
         return 0
     finally:
         session.close()
@@ -1314,6 +1388,10 @@ def main() -> int:
     args = parse_args()
     try:
         return run_basic(args)
+    except BrokenPipeError:
+        return _broken_pipe_exit_code()
+    except KeyboardInterrupt:
+        return 130
     except BasicTimeoutError:
         if args.timeout:
             print(f"error: fm11basic batch run timed out after {args.timeout}", file=sys.stderr)

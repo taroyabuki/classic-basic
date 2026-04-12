@@ -90,9 +90,16 @@ class DosTextShell:
             except EOFError:
                 print()
                 return 0
+            except KeyboardInterrupt:
+                print()
+                return 130
 
-            if not self._handle_command(command):
-                return 0
+            try:
+                if not self._handle_command(command):
+                    return 0
+            except KeyboardInterrupt:
+                print()
+                return 130
 
     def _handle_command(self, command: str) -> bool:
         stripped = command.strip()

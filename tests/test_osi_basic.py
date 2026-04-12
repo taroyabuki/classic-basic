@@ -117,6 +117,52 @@ class OsiBasicTests(unittest.TestCase):
         self.assertNotIn(b"RUN\r", staged_input)
         self.assertNotIn(b"LIST\r", staged_input)
 
+    def test_main_returns_130_on_keyboard_interrupt(self) -> None:
+        class FakeMachine:
+            def run(self, console, max_steps: int = 5_000_000):
+                del console, max_steps
+                raise KeyboardInterrupt
+
+        fake_stdin = io.TextIOWrapper(io.BytesIO(b""), encoding="ascii")
+        with (
+            patch.object(osi_basic, "OsiBasicMachine", return_value=FakeMachine()),
+            patch.object(osi_basic.sys, "stdin", fake_stdin),
+        ):
+            with patch.object(osi_basic.sys.stdin, "isatty", return_value=False):
+                exit_code = osi_basic.main(["--exec", "PRINT 2+2"])
+
+        self.assertEqual(exit_code, 130)
+
+    def test_main_returns_141_on_broken_pipe(self) -> None:
+        class FakeMachine:
+            def run(self, console, max_steps: int = 5_000_000):
+                del max_steps
+                console.write_byte(ord("O"))
+                console.write_byte(ord("K"))
+                console.write_byte(0x0D)
+                console.write_byte(ord("R"))
+                console.write_byte(ord("U"))
+                console.write_byte(ord("N"))
+                console.write_byte(0x0D)
+                console.write_byte(ord("1"))
+                console.write_byte(0x0D)
+                raise BrokenPipeError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            program_path = Path(tmp) / "demo.bas"
+            program_path.write_text("10 PRINT 1\n", encoding="ascii")
+            fake_stdin = io.TextIOWrapper(io.BytesIO(b""), encoding="ascii")
+            with (
+                patch.object(osi_basic, "OsiBasicMachine", return_value=FakeMachine()),
+                patch.object(osi_basic, "sys", wraps=osi_basic.sys) as fake_sys,
+                patch.object(osi_basic.os, "dup2"),
+            ):
+                fake_sys.stdin = fake_stdin
+                with patch.object(fake_sys.stdin, "isatty", return_value=True):
+                    exit_code = osi_basic.main([str(program_path)])
+
+        self.assertEqual(exit_code, 141)
+
     def test_session_console_normalizes_lowercase_letters_to_uppercase(self) -> None:
         console = SessionConsole(staged_input=b"print a\r")
 

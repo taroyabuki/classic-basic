@@ -71,11 +71,26 @@ def main(argv: list[str] | None = None) -> int:
         _install_timeout(args.timeout)
         machine.boot()
         if args.file is not None and args.run:
-            sys.stdout.write(machine.run_program_file(args.file))
+            emitted_chunks: list[str] = []
+
+            def _emit(text: str) -> None:
+                emitted_chunks.append(text)
+                sys.stdout.write(text)
+                sys.stdout.flush()
+
+            result = machine.run_program_file(
+                args.file,
+                emit_output=_emit,
+            )
+            if result and not emitted_chunks:
+                sys.stdout.write(result)
+                sys.stdout.flush()
             return 0
         if args.file is not None:
             machine.load_program_file(args.file)
         return machine.run_terminal()
+    except KeyboardInterrupt:
+        return 130
     except (FileNotFoundError, InputRequestError, RuntimeError, TimeoutError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

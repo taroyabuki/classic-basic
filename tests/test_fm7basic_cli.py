@@ -72,6 +72,14 @@ class Fm7BasicCliTests(unittest.TestCase):
         self.assertEqual(result, 2)
         self.assertIn("error: no input", stderr.getvalue())
 
+    def test_main_returns_130_on_keyboard_interrupt(self) -> None:
+        with mock.patch.object(fm7basic_cli, "run_interactive_session", side_effect=KeyboardInterrupt):
+            result = fm7basic_cli.main(
+                ["--mame-command", "mame", "--driver", "fm7", "--rompath", "/tmp/roms"]
+            )
+
+        self.assertEqual(result, 130)
+
     def test_run_interactive_session_uses_headless_path_without_display(self) -> None:
         with (
             mock.patch.dict("os.environ", {}, clear=True),

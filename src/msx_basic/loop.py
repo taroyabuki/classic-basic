@@ -11,6 +11,7 @@ import re
 import time
 from pathlib import Path
 import sys
+from collections.abc import Callable
 
 from .bridge import OpenMSXBridge
 from .program_check import validate_program_text
@@ -576,6 +577,7 @@ def run_batch(bridge: OpenMSXBridge, program: Path) -> int:
     _wait_for_stable_ok_prompt(bridge, timeout=4.0)
     _configure_batch_speed(bridge)
     loaded_lines = _load_program_lines(bridge, program)
+    emitted_count = [0]
 
     initial_lines, initial_cursor_row = _get_screen_state(bridge, timeout=1.0)
     output_lines = _run_loaded_program(
@@ -583,8 +585,12 @@ def run_batch(bridge: OpenMSXBridge, program: Path) -> int:
         initial_lines=initial_lines,
         initial_cursor_row=initial_cursor_row,
         ignored_lines=_build_ignored_source_lines(loaded_lines),
+        emit_lines=lambda lines: _emit_filtered_batch_lines(lines, loaded_lines, emitted_count),
     )
-    _print_batch_result(output_lines, loaded_lines)
+    _print_batch_result(
+        _filter_batch_result_lines(output_lines, loaded_lines)[emitted_count[0] :],
+        loaded_lines,
+    )
     return 0
 
 
@@ -600,14 +606,19 @@ def run_loaded_batch(bridge: OpenMSXBridge, program: Path) -> int:
         for line in source_text.splitlines()
         if line.rstrip("\r")
     ]
+    emitted_count = [0]
     initial_lines, initial_cursor_row = _get_screen_state(bridge, timeout=1.0)
     output_lines = _run_loaded_program(
         bridge,
         initial_lines=initial_lines,
         initial_cursor_row=initial_cursor_row,
         ignored_lines=_build_ignored_source_lines(loaded_lines),
+        emit_lines=lambda lines: _emit_filtered_batch_lines(lines, loaded_lines, emitted_count),
     )
-    _print_batch_result(output_lines, loaded_lines)
+    _print_batch_result(
+        _filter_batch_result_lines(output_lines, loaded_lines)[emitted_count[0] :],
+        loaded_lines,
+    )
     return 0
 
 
@@ -654,6 +665,7 @@ def _run_loaded_program(
     initial_lines: list[str],
     initial_cursor_row: int,
     ignored_lines: set[str],
+    emit_lines: Callable[[list[str]], None] | None = None,
 ) -> list[str]:
     _wait_for_stable_ok_prompt(bridge, timeout=4.0)
     bridge.type_text("RUN\r", via_keybuf=True, timeout=_BATCH_INPUT_TIMEOUT)
@@ -663,6 +675,7 @@ def _run_loaded_program(
         initial_lines=initial_lines,
         initial_cursor_row=initial_cursor_row,
         ignored_lines=ignored_lines,
+        emit_lines=emit_lines,
     )
 
 
@@ -808,6 +821,7 @@ def _drain_until_prompt(
     initial_lines: list[str],
     initial_cursor_row: int,
     ignored_lines: set[str],
+    emit_lines: Callable[[list[str]], None] | None = None,
 ) -> list[str]:
     deadline = None if timeout is None else time.monotonic() + timeout
     tracker = BatchOutputTracker(ignored_lines)
@@ -822,13 +836,19 @@ def _drain_until_prompt(
         if not saw_prompt_departure:
             saw_prompt_departure = cursor_row != initial_cursor_row or lines != initial_lines
         if saw_prompt_departure:
+            previous_count = len(tracker._lines)
             tracker.observe(lines, cursor_row)
             tracker.capture_window(lines, 0, len(lines))
+            if emit_lines is not None and len(tracker._lines) > previous_count:
+                emit_lines(tracker._lines[previous_count:])
             if _post_run_prompt_visible(lines, cursor_row):
+                previous_count = len(tracker._lines)
                 tracker.capture_window(lines, initial_cursor_row, cursor_row)
                 run_row = _last_row_with_text(lines, cursor_row, "RUN")
                 if run_row is not None:
                     tracker.capture_window(lines, run_row + 1, cursor_row)
+                if emit_lines is not None and len(tracker._lines) > previous_count:
+                    emit_lines(tracker._lines[previous_count:])
                 return tracker.finish(lines, cursor_row)
         last_lines = lines
         last_cursor_row = cursor_row
@@ -837,11 +857,29 @@ def _drain_until_prompt(
 
 
 def _print_batch_result(lines: list[str], loaded_lines: list[str]) -> None:
+    for line in _filter_batch_result_lines(lines, loaded_lines):
+        print(line)
+
+
+def _emit_filtered_batch_lines(
+    lines: list[str],
+    loaded_lines: list[str],
+    emitted_count: list[int],
+) -> None:
+    filtered_lines = _filter_batch_result_lines(lines, loaded_lines)
+    for line in filtered_lines[emitted_count[0] :]:
+        print(line)
+    emitted_count[0] = len(filtered_lines)
+
+
+def _filter_batch_result_lines(lines: list[str], loaded_lines: list[str]) -> list[str]:
     source_lines = {line.strip() for line in loaded_lines}
+    filtered: list[str] = []
     for line in lines:
         stripped = line.strip()
         if stripped in source_lines:
             continue
         if _looks_like_loaded_source_fragment(stripped, loaded_lines):
             continue
-        print(line)
+        filtered.append(line)
+    return filtered

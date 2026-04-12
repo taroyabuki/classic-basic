@@ -12,6 +12,7 @@ import threading
 import time
 import tty
 from pathlib import Path
+from collections.abc import Callable
 
 import fbasic_batch
 import n88basic_program_check
@@ -719,7 +720,12 @@ class N88BasicCLI:
             lines.pop()
         return lines
 
-    def _capture_run_screen_state(self, session: RunControlSession) -> dict[str, object]:
+    def _capture_run_screen_state(
+        self,
+        session: RunControlSession,
+        *,
+        saw_run_prompt: bool = False,
+    ) -> dict[str, object]:
         lines: list[str] = []
         for raw_line in self._capture_run_screen_lines(session):
             normalized = raw_line.replace("\ufffd", "").strip()
@@ -729,12 +735,19 @@ class N88BasicCLI:
         for index, line in enumerate(lines):
             if line.lower() == "run":
                 run_index = index
+        saw_run_prompt = saw_run_prompt or run_index is not None
         if run_index is None:
-            return {"lines": lines, "output_lines": [], "completed": False}
-        post_run = lines[run_index + 1 :]
-        output_lines = [line for line in post_run if line.lower() != "ok"]
-        completed = any(line.lower() == "ok" for line in post_run)
-        return {"lines": lines, "output_lines": output_lines, "completed": completed}
+            post_run = list(lines) if saw_run_prompt else []
+        else:
+            post_run = lines[run_index + 1 :]
+        completed = saw_run_prompt and bool(post_run) and post_run[-1].lower() == "ok"
+        output_lines = post_run[:-1] if completed else post_run
+        return {
+            "lines": lines,
+            "output_lines": output_lines,
+            "completed": completed,
+            "saw_run_prompt": saw_run_prompt,
+        }
 
     def _drive_run_startup(self, session: RunControlSession, *, startup_timeout: float) -> bool:
         deadline = time.monotonic() + startup_timeout
@@ -752,14 +765,17 @@ class N88BasicCLI:
         session: RunControlSession,
         *,
         timeout_seconds: float | None,
+        emit_output: Callable[[list[str]], None] | None = None,
     ) -> tuple[bool, list[str]]:
         deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
         last_state: dict[str, object] = {"lines": [], "output_lines": [], "completed": False}
         accumulated_output: list[str] = []
         previous_visible_lines: list[str] = []
+        saw_run_prompt = False
         while deadline is None or time.monotonic() < deadline:
             session.wait(200)
-            last_state = self._capture_run_screen_state(session)
+            last_state = self._capture_run_screen_state(session, saw_run_prompt=saw_run_prompt)
+            saw_run_prompt = bool(last_state.get("saw_run_prompt", saw_run_prompt))
             current_output_lines = list(last_state["output_lines"])
             # While the program is still running, the final visible line may still be
             # in-flight and get replaced by its completed form on the next poll.
@@ -768,9 +784,11 @@ class N88BasicCLI:
                 if bool(last_state["completed"])
                 else current_output_lines[:-1]
             )
-            for line in _screen_suffix(previous_visible_lines, visible_lines):
-                if line:
-                    accumulated_output.append(line)
+            new_lines = [line for line in _screen_suffix(previous_visible_lines, visible_lines) if line]
+            if new_lines:
+                accumulated_output.extend(new_lines)
+                if emit_output is not None:
+                    emit_output(new_lines)
             previous_visible_lines = visible_lines
             if bool(last_state["completed"]):
                 return True, accumulated_output
@@ -811,11 +829,17 @@ class N88BasicCLI:
         if not ok:
             print("error: failed to queue RUN command", file=sys.stderr)
             return int(response.get("code", RUN_ERR_PROTOCOL))
-        completed, output_lines = self._poll_run_completion(session, timeout_seconds=timeout_seconds)
+        completed, output_lines = self._poll_run_completion(
+            session,
+            timeout_seconds=timeout_seconds,
+            emit_output=self._emit_run_stdout,
+        )
         if completed:
             if not output_lines:
-                output_lines = list(self._capture_run_screen_state(session)["output_lines"])
-            self._emit_run_stdout(output_lines)
+                output_lines = list(
+                    self._capture_run_screen_state(session, saw_run_prompt=True)["output_lines"]
+                )
+                self._emit_run_stdout(output_lines)
             return RUN_ERR_OK
         print("error: n88basic batch run timed out", file=sys.stderr)
         return RUN_ERR_TIMEOUT
@@ -899,6 +923,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.file is not None:
             return cli.run_file_interactive(str(Path(args.file).resolve()))
         return cli.run_interactive()
+    except KeyboardInterrupt:
+        cli.stop_quasi88()
+        return 130
     except (OSError, RuntimeError, UnicodeDecodeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

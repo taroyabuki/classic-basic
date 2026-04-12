@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-from .machine import InputRequestError, PC8001Config, PC8001Machine, RomSpec, _preprocess_n80_basic_source
+from .machine import InputRequestError, PC8001Config, PC8001Machine, RomSpec
 
 DEFAULT_ROM_PATH = Path(__file__).resolve().parent.parent.parent / "downloads/pc8001/N80_11.rom"
 
@@ -194,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 rc = machine.run_terminal()
             except KeyboardInterrupt:
-                rc = 0
+                rc = 130
         if args.show_state:
             print(machine.format_state_summary(), file=sys.stderr)
         if args.show_ports:
@@ -206,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.show_vram_summary:
             print(machine.format_vram_summary(), file=sys.stderr)
         return rc
+    except KeyboardInterrupt:
+        return 130
     except (FileNotFoundError, InputRequestError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -228,21 +230,6 @@ def _decode_key_sequence(text: str) -> list[int]:
     return [ord(char) for char in decoded]
 
 
-_BASIC_LINE_PREFIX = __import__("re").compile(r"^\d+\s")
-
-
 def _preprocess_keys_for_n80_basic(keys: str) -> str:
-    """If *keys* looks like N-BASIC source (lines prefixed with line numbers),
-    apply source-level rewrites (FOR loop rewriting, condition normalisation)
-    so that the interactive ROM path behaves like the binary-injection path.
-    Non-BASIC keys (single commands, etc.) pass through unchanged.
-    """
-    # Split on literal \r escape sequences (the raw string the user passed in)
-    parts = keys.split(r"\r")
-    if not any(_BASIC_LINE_PREFIX.match(p.lstrip()) for p in parts):
-        return keys
-    # Reassemble as plain source lines (without the \r markers) for preprocessing
-    source = "\n".join(p for p in parts if p)
-    preprocessed = _preprocess_n80_basic_source(source)
-    # Rebuild as \r-separated key sequence
-    return r"\r".join(preprocessed.splitlines()) + r"\r"
+    """Normalize line endings only for raw --keys input."""
+    return keys.replace(r"\r\n", r"\r").replace(r"\n", r"\r").replace("\r\n", "\r").replace("\n", "\r")

@@ -90,6 +90,26 @@ class RunCpmBatchExitTests(unittest.TestCase):
             self.assertEqual(result.returncode, 3)
             self.assertEqual(result.stdout, "NO PROMPT\n")
 
+    def test_main_returns_130_on_keyboard_interrupt(self) -> None:
+        with (
+            mock.patch(
+                "runcpm_batch_exit._parse_args",
+                return_value=mock.Mock(
+                    runtime="runtime",
+                    prompt="A0>",
+                    exit_command="EXIT\r",
+                    timeout="",
+                    intermediate_prompt="",
+                    intermediate_command="",
+                    output_filter="",
+                ),
+            ),
+            mock.patch("runcpm_batch_exit.run_batch", side_effect=KeyboardInterrupt),
+        ):
+            result = runcpm_batch_exit.main()
+
+        self.assertEqual(result, 130)
+
     def test_sends_intermediate_command_before_final_exit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime_dir = Path(tmp)

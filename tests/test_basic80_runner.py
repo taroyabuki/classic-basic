@@ -7,15 +7,18 @@ import signal
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT_DIR / "src"))
 
 
 def _write_executable(path: Path, content: str) -> None:
@@ -82,6 +85,14 @@ def _prepare_fake_runcpm_tree(root: Path) -> None:
 
 class Basic80RunnerTests(unittest.TestCase):
     maxDiff = None
+
+    def test_basic80_interactive_main_returns_130_on_keyboard_interrupt(self) -> None:
+        import basic80_interactive
+
+        with mock.patch.object(basic80_interactive, "_run_bridge", side_effect=KeyboardInterrupt):
+            result = basic80_interactive.main(["--runtime", "/tmp/runtime"])
+
+        self.assertEqual(result, 130)
 
     def test_plain_interactive_launch_exits_on_ctrl_d(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

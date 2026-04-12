@@ -190,6 +190,18 @@ def _emit_chunk(chunk: bytes, captured_output: list[bytes] | None) -> None:
     sys.stdout.buffer.flush()
 
 
+def _emit_filtered_chunk(
+    chunk: bytes,
+    captured_output: list[bytes] | None,
+    *,
+    basic80_stream_filter: _Basic80StreamFilter | None,
+) -> None:
+    if basic80_stream_filter is not None:
+        basic80_stream_filter.feed(chunk)
+        return
+    _emit_chunk(chunk, captured_output)
+
+
 def _filter_basic80_output(text: str) -> str:
     text = _OSC_RE.sub("\n", text)
     text = _CSI_RE.sub("\n", text)
@@ -227,6 +239,45 @@ def _emit_filtered_output(captured_output: list[bytes], output_filter: str) -> N
         sys.stdout.flush()
 
 
+class _Basic80StreamFilter:
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._emitting = False
+
+    def feed(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        text = chunk.decode("utf-8", errors="replace")
+        text = _OSC_RE.sub("\n", text)
+        text = _CSI_RE.sub("\n", text)
+        text = _ESC_RE.sub("\n", text)
+        self._buffer += text.replace("\r\n", "\n").replace("\r", "\n")
+        while "\n" in self._buffer:
+            raw_line, self._buffer = self._buffer.split("\n", 1)
+            self._emit_line(raw_line.rstrip())
+
+    def finish(self) -> None:
+        if self._buffer:
+            self._emit_line(self._buffer.rstrip())
+            self._buffer = ""
+
+    def _emit_line(self, line: str) -> None:
+        line = _OSC_RE.sub("", line)
+        line = _CSI_RE.sub("", line)
+        line = _ESC_RE.sub("", line)
+        stripped = line.strip()
+        if not stripped:
+            return
+        if not self._emitting:
+            if stripped == "Ok" or _BASIC80_STARTUP_RE.match(stripped):
+                return
+            self._emitting = True
+        if _BASIC80_SHUTDOWN_RE.match(stripped):
+            return
+        sys.stdout.write(f"{line}\n")
+        sys.stdout.flush()
+
+
 def _terminate_child(proc: subprocess.Popen[bytes]) -> int:
     if proc.poll() is not None:
         return proc.wait()
@@ -260,7 +311,8 @@ def run_batch(
     exit_sent = False
     original_parent_pid = os.getppid()
     deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
-    captured_output: list[bytes] | None = [] if output_filter else None
+    captured_output: list[bytes] | None = [] if output_filter and output_filter != "basic80" else None
+    basic80_stream_filter = _Basic80StreamFilter() if output_filter == "basic80" else None
 
     try:
         while True:
@@ -303,7 +355,11 @@ def run_batch(
                 if intermediate_starts:
                     intermediate_start = min(intermediate_starts)
                     if intermediate_start > 0:
-                        _emit_chunk(pending[:intermediate_start], captured_output)
+                        _emit_filtered_chunk(
+                            pending[:intermediate_start],
+                            captured_output,
+                            basic80_stream_filter=basic80_stream_filter,
+                        )
                     _send_exit(write_target, intermediate_command_bytes)
                     intermediate_sent = True
                     pending = b""
@@ -313,7 +369,11 @@ def run_batch(
             if prompt_starts:
                 prompt_start = min(prompt_starts)
                 if prompt_start > 0:
-                    _emit_chunk(pending[:prompt_start], captured_output)
+                    _emit_filtered_chunk(
+                        pending[:prompt_start],
+                        captured_output,
+                        basic80_stream_filter=basic80_stream_filter,
+                    )
                 _send_exit(write_target, exit_bytes)
                 exit_sent = True
                 pending = b""
@@ -321,13 +381,23 @@ def run_batch(
 
             flush_upto = max(0, len(pending) - lookback)
             if flush_upto > 0:
-                _emit_chunk(pending[:flush_upto], captured_output)
+                _emit_filtered_chunk(
+                    pending[:flush_upto],
+                    captured_output,
+                    basic80_stream_filter=basic80_stream_filter,
+                )
                 pending = pending[flush_upto:]
 
         if not exit_sent and pending:
-            _emit_chunk(pending, captured_output)
+            _emit_filtered_chunk(
+                pending,
+                captured_output,
+                basic80_stream_filter=basic80_stream_filter,
+            )
         returncode = proc.wait()
-        if captured_output is not None:
+        if basic80_stream_filter is not None:
+            basic80_stream_filter.finish()
+        elif captured_output is not None:
             _emit_filtered_output(captured_output, output_filter)
         return returncode
     finally:
@@ -349,15 +419,18 @@ def main() -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    return run_batch(
-        Path(args.runtime),
-        args.prompt,
-        args.exit_command,
-        timeout_seconds,
-        intermediate_prompt=args.intermediate_prompt,
-        intermediate_command=args.intermediate_command,
-        output_filter=args.output_filter,
-    )
+    try:
+        return run_batch(
+            Path(args.runtime),
+            args.prompt,
+            args.exit_command,
+            timeout_seconds,
+            intermediate_prompt=args.intermediate_prompt,
+            intermediate_command=args.intermediate_command,
+            output_filter=args.output_filter,
+        )
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":
