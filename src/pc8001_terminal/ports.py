@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import field
+
+from dataclass_compat import dataclass
 from typing import Deque
 
 from z80_basic.cpu import PortDevice

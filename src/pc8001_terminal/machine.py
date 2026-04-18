@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
+from dataclass_compat import dataclass
 from pathlib import Path
 import sys
 
@@ -32,7 +32,7 @@ class PC8001Config:
     startup_program: Path | None = None
     run_startup: bool = True  # If False, load startup_program but do not RUN it
     max_steps: int = 20000
-    batch_rounds: int = 32
+    batch_rounds: int | None = None
     vram_start: int = 0xF300
     vram_stride: int | None = 0x78
     vram_cell_width: int = 2
@@ -337,13 +337,28 @@ class PC8001Machine:
         self.console_output_offset = 0
         self.last_result = self.run_firmware(max_steps=self.config.max_steps)
 
-    def _run_host_basic_until_settled(self, *, max_rounds: int | None = None) -> None:
-        rounds = max_rounds if max_rounds is not None else self.config.batch_rounds
-        for _ in range(rounds):
+    def _run_host_basic_until_settled(
+        self,
+        *,
+        max_rounds: int | None = None,
+    ) -> None:
+        rounds = (
+            max_rounds
+            if max_rounds is not None
+            else self.config.batch_rounds
+        )
+        completed_rounds = 0
+        while True:
             result = self.run_firmware(max_steps=self.config.max_steps)
             self._stream_batch_console_output()
             if result.reason != "step_limit":
                 return
+            completed_rounds += 1
+            if rounds is not None and completed_rounds >= rounds:
+                raise TimeoutError(
+                    "timed out waiting for N-BASIC batch program to settle "
+                    "(round limit exhausted; increase batch_rounds/--max-rounds for long-running programs)"
+                )
 
     def _raise_if_batch_requested_input(self) -> None:
         if (
@@ -375,7 +390,7 @@ class PC8001Machine:
         return (
             self._use_host_terminal()
             and self.config.startup_program is not None
-            and not sys.stdout.isatty()
+            and self.config.run_startup
         )
 
     def _print_non_tty_output(self) -> None:
@@ -391,11 +406,16 @@ class PC8001Machine:
             print(line)
 
     def _run_host_terminal(self) -> int:
-        text = self.consume_console_output()
-        if text:
-            sys.stdout.write(text)
-            sys.stdout.flush()
         while True:
+            text = self.consume_console_output()
+            if text:
+                sys.stdout.write(text)
+                if not text.endswith("\n"):
+                    sys.stdout.write("\n")
+                sys.stdout.flush()
+            if self.last_result is not None and self.last_result.reason == "step_limit":
+                self.run_firmware(max_steps=self.config.max_steps)
+                continue
             if self.last_result is not None and self.last_result.reason not in {"input_wait", "step_limit"}:
                 return 0
             try:
@@ -403,23 +423,40 @@ class PC8001Machine:
             except (EOFError, KeyboardInterrupt):
                 return 0
             self.inject_keys([ord(char) for char in line] + [0x0D])
-            text = self.consume_console_output()
-            if text:
-                sys.stdout.write(text)
-                if not text.endswith("\n"):
-                    sys.stdout.write("\n")
-                sys.stdout.flush()
 
 
 _NBASIC_NOISE_RE = re.compile(
     r"^(?:NEC PC-8001 BASIC|Copyright 1979.*Microsoft|Ok$)"
 )
+_NBASIC_TRAILING_PROMPT_RE = re.compile(r"^(.*?)(\s+Ok)(\r?\n?)$")
 
 
 def _filter_nbasic_batch_output(text: str) -> str:
     """Remove ROM banner and bare 'Ok' prompts from N-BASIC batch output."""
     lines = text.splitlines(keepends=True)
-    return "".join(line for line in lines if not _NBASIC_NOISE_RE.match(line))
+    filtered: list[str] = []
+    for index, line in enumerate(lines):
+        if _NBASIC_NOISE_RE.match(line):
+            continue
+        if index == len(lines) - 1:
+            line = _strip_trailing_nbasic_prompt(line)
+            if not line:
+                continue
+        filtered.append(line)
+    return "".join(filtered)
+
+
+def _strip_trailing_nbasic_prompt(line: str) -> str:
+    match = _NBASIC_TRAILING_PROMPT_RE.match(line)
+    if match is None:
+        return line
+    payload, _, newline = match.groups()
+    tokens = payload.rstrip().split()
+    if not tokens:
+        return line
+    if not all(re.fullmatch(r"[0-9A-Fa-f.+-]+", token) is not None for token in tokens):
+        return line
+    return f"{payload.rstrip()}{newline}"
 
 
 def _read_basic_source_text(path: Path) -> str:

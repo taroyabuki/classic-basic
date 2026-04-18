@@ -764,6 +764,51 @@ class N88BasicRunnerTests(unittest.TestCase):
             ],
         )
 
+    def test_poll_run_completion_ignores_redrawn_older_window(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        class _Session:
+            def wait(self, _timeout_ms: int) -> None:
+                return None
+
+        states = iter(
+            [
+                {
+                    "lines": ["RUN", "B3", "B4", "B5", "B6"],
+                    "output_lines": ["B3", "B4", "B5", "B6"],
+                    "completed": False,
+                },
+                {
+                    "lines": ["RUN", "B3", "B4", "B5", "B6", "B7"],
+                    "output_lines": ["B3", "B4", "B5", "B6", "B7"],
+                    "completed": False,
+                },
+                {
+                    "lines": ["RUN", "B4", "B5", "B6", "B7", "B8"],
+                    "output_lines": ["B4", "B5", "B6", "B7", "B8"],
+                    "completed": False,
+                },
+                {
+                    "lines": ["RUN", "B3", "B4", "B5", "B6", "B7"],
+                    "output_lines": ["B3", "B4", "B5", "B6", "B7"],
+                    "completed": False,
+                },
+                {
+                    "lines": ["RUN", "B5", "B6", "B7", "B8", "B9", "Ok"],
+                    "output_lines": ["B5", "B6", "B7", "B8", "B9"],
+                    "completed": True,
+                },
+            ]
+        )
+
+        cli = N88BasicCLI()
+        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False: next(states)  # type: ignore[method-assign]
+
+        completed, output_lines = cli._poll_run_completion(_Session(), timeout_seconds=1.0)
+
+        self.assertTrue(completed)
+        self.assertEqual(output_lines, ["B3", "B4", "B5", "B6", "B7", "B8", "B9"])
+
     def test_capture_run_screen_state_keeps_completion_after_run_scrolls_off(self) -> None:
         from n88basic_cli import N88BasicCLI
 

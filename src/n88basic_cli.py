@@ -42,29 +42,17 @@ _REQUIRED_ROM_ALIASES: tuple[tuple[str, ...], ...] = (
 
 
 def _screen_suffix(previous_lines: list[str], current_lines: list[str]) -> list[str]:
+    if not current_lines:
+        return []
     if not previous_lines:
         return current_lines
-    prefix_length = 0
+
     max_prefix = min(len(previous_lines), len(current_lines))
-    while prefix_length < max_prefix and previous_lines[prefix_length] == current_lines[prefix_length]:
-        prefix_length += 1
-    if prefix_length == len(current_lines):
-        return []
-    if prefix_length == len(previous_lines):
-        return current_lines[prefix_length:]
-
-    previous_count = len(previous_lines)
-    current_count = len(current_lines)
-    if previous_count > 1:
-        for start in range(current_count - previous_count + 1):
-            if current_lines[start : start + previous_count] == previous_lines:
-                return current_lines[start + previous_count :]
-
-    overlap = min(previous_count, current_count)
-    while overlap > 0:
-        if previous_lines[-overlap:] == current_lines[:overlap]:
-            return current_lines[overlap:]
-        overlap -= 1
+    for prefix_length in range(max_prefix, 0, -1):
+        prefix = current_lines[:prefix_length]
+        for start in range(len(previous_lines) - prefix_length, -1, -1):
+            if previous_lines[start : start + prefix_length] == prefix:
+                return current_lines[prefix_length:]
     return current_lines
 
 
@@ -770,7 +758,6 @@ class N88BasicCLI:
         deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
         last_state: dict[str, object] = {"lines": [], "output_lines": [], "completed": False}
         accumulated_output: list[str] = []
-        previous_visible_lines: list[str] = []
         saw_run_prompt = False
         while deadline is None or time.monotonic() < deadline:
             session.wait(200)
@@ -784,12 +771,11 @@ class N88BasicCLI:
                 if bool(last_state["completed"])
                 else current_output_lines[:-1]
             )
-            new_lines = [line for line in _screen_suffix(previous_visible_lines, visible_lines) if line]
+            new_lines = [line for line in _screen_suffix(accumulated_output, visible_lines) if line]
             if new_lines:
                 accumulated_output.extend(new_lines)
                 if emit_output is not None:
                     emit_output(new_lines)
-            previous_visible_lines = visible_lines
             if bool(last_state["completed"]):
                 return True, accumulated_output
             time.sleep(0.2)

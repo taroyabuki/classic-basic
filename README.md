@@ -1,6 +1,6 @@
 # Terminal Classic BASICs
 
-通常のターミナル上で古典的な Microsoft BASIC 系を動かすための実用構成です。
+通常のターミナル上で古典的な Microsoft BASIC 系を動かすための実用構成です。数値計算の実験を主目的としており、グラフィックス、サウンド、動作タイミングの等価性は無視しています。
 
 冒頭の整理として、このリポジトリで扱っている BASIC は次のとおりです。
 
@@ -35,15 +35,6 @@
 | QBasic | [qbasic.sh](setup/qbasic.sh) | `./setup/qbasic.sh` |
 | Grant BASIC | [grantsbasic.sh](setup/grantsbasic.sh) | `./setup/grantsbasic.sh` |
 
-主な取得元:
-
-- `N-BASIC`: `https://archive.org/download/mame-0.221-roms-merged/pc8001.zip`
-- `N88-BASIC`: Neo Kobe emulator pack (`https://archive.org/download/neo-kobe-emulator-pack-2013-08-17.7z/Neo%20Kobe%20emulator%20pack%202013-08-17.7z`)
-  - 実行バイナリの emulator 本体は local `vendor/quasi88/` に同梱しており、official QUASI88 `0.7.3` release (`https://www.eonet.ne.jp/~showtime/quasi88/download.html`) をベースに、この repo 用の control bridge を加えています
-- `FM-7 F-BASIC`: `https://archive.org/download/mame-0.221-roms-merged/fm7.zip`
-- `FM-11 F-BASIC`: `https://archive.org/download/mame-0.221-roms-merged/fm11.zip`
-- `MSX-BASIC`: `https://archive.org/download/mame-0.221-roms-merged/vg802020.zip`
-
 ## 対話的な利用
 
 `./run/スクリプトファイル` で通常の対話モードを起動します。対話モードは `Ctrl-D` で終了します。QBasic は full-screen IDE をそのまま流さず、host 側の text shell として動きます。行番号付き入力、`LIST`、`RUN`、`NEW`、および direct statement を text-only で扱い、実行自体は real QBasic の batch backend を使います。
@@ -61,35 +52,11 @@
 | QBasic | [qbasic.sh](run/qbasic.sh) | `./run/qbasic.sh` |
 | Grant BASIC | [grantsbasic.sh](run/grantsbasic.sh) | `./run/grantsbasic.sh` |
 
-## ファイルの実行
+## ファイルの利用（`--file` / `-f`）
 
-`./run/スクリプトファイル --file ファイル名` とすると、ファイルに書かれた行番号付き BASIC プログラムを読み込んだ状態で対話モードを起動します。この場合はまだ実行されないので、対話中に `RUN` を入力すれば実行できます。対話モードは `Ctrl-D` で終了します。QBasic は text shell に読み込んだプログラムを保持し、`RUN` のたびに real QBasic batch backend で実行します。
+`./run/スクリプトファイル --file ファイル名` とすると、行番号付き BASIC ソースをメモリに読み込んだ状態で対話端末を起動します（`RUN` はしません）。対話中に `RUN` を入力すれば実行できます。対話モードは `Ctrl-D` で終了します。`--file` で与えるソースは ASCII 前提で、改行コードは `LF` / `CRLF` / `CR` を受理します。
 
-`./run/スクリプトファイル --run --file ファイル名` とすると、同じ読み込み済み状態からプログラムを実行し、プログラム終了後に対話モードも終了します。`PRINT` などの出力は標準出力に出力します。`INPUT` などプログラム実行中の入力要求は未対応で、未対応の実装では即エラー終了します。すでに対応している処理系はそのままです。
-
-`--file` で与えるソースは ASCII だけで書かれている前提です。改行コードは `LF` / `CRLF` / `CR` を受理します。
-
-共通の smoke test 用として、すべての runner で使う前提の [demo/sample.bas](demo/sample.bas) を置いてあります。
-
-| BASIC | スクリプト | 実行方法 | 動作確認 |
-| --- | --- | --- | --- |
-| 6502 BASIC | [6502.sh](run/6502.sh) | `./run/6502.sh --run --file ファイル名` | `./run/6502.sh --run --file demo/6502.bas` |
-| BASIC-80 | [basic80.sh](run/basic80.sh) | `./run/basic80.sh --run --file ファイル名` | `./run/basic80.sh --run --file demo/basic80.bas` |
-| N-BASIC | [nbasic.sh](run/nbasic.sh) | `./run/nbasic.sh --run --file ファイル名` | `./run/nbasic.sh --run --file demo/nbasic.bas` |
-| N88-BASIC | [n88basic.sh](run/n88basic.sh) | `./run/n88basic.sh --run --file ファイル名` | `./run/n88basic.sh --run --file demo/n88basic.bas` |
-| FM-7 F-BASIC | [fm7basic.sh](run/fm7basic.sh) | `./run/fm7basic.sh --run --file ファイル名` | `./run/fm7basic.sh --run --file demo/fm7basic.bas` |
-| FM-11 F-BASIC | [fm11basic.sh](run/fm11basic.sh) | `./run/fm11basic.sh --run --file ファイル名` | `./run/fm11basic.sh --run --file demo/fm11basic.bas` |
-| GW-BASIC | [gwbasic.sh](run/gwbasic.sh) | `./run/gwbasic.sh --run --file ファイル名` | `./run/gwbasic.sh --run --file demo/gwbasic.bas` |
-| MSX-BASIC | [msxbasic.sh](run/msxbasic.sh) | `./run/msxbasic.sh --run --file ファイル名` | `./run/msxbasic.sh --run --file demo/msxbasic.bas` |
-| QBasic | [qbasic.sh](run/qbasic.sh) | `./run/qbasic.sh --run --file ファイル名` | `./run/qbasic.sh --run --file demo/qbasic.bas` |
-| Grant BASIC | [grantsbasic.sh](run/grantsbasic.sh) | `./run/grantsbasic.sh --run --file ファイル名` | `./run/grantsbasic.sh --run --file demo/grantsbasic.bas` |
-
-## ファイルを読み込んで対話（`-f` / `--file`）
-
-`--file` オプションを使うと、行番号付き BASIC ソースをメモリに読み込んだ状態で対話端末を起動します（`RUN` はしません）。対話中に `RUN` を入力すれば実行できます。
-`--run --file` を付けると、読み込み済みプログラムを実行し、プログラム終了後に対話モードも終了します。`--file` を省略すると通常の対話起動です。対話モードは `Ctrl-D` で終了します。`--file` で与えるソースは ASCII 前提で、改行コードは `LF` / `CRLF` / `CR` を受理します。実行時間は既定で無制限です。必要なときだけ `--timeout 90` や `--timeout 2m` のように指定してください。`--timeout` は batch/file-run 全体の wall time に効きます。
-
-既定では、`INPUT` / `LINE INPUT` / `INPUT$` / `INKEY$` のようなプログラム実行中の入力要求は `--run --file` で未対応です。対応していない処理系では即エラー終了します。
+`--run`（`-r`）を加えると、読み込み済みプログラムを実行し、プログラム終了後に対話モードも終了します。`PRINT` などの出力は標準出力に出力します。実行時間は既定で無制限です。必要なときだけ `--timeout 90` や `--timeout 2m` のように指定してください。`INPUT` / `LINE INPUT` / `INPUT$` / `INKEY$` のような入力要求は未対応の処理系では即エラー終了します。
 
 | BASIC | 読み込んで対話 | 実行して終了 |
 | --- | --- | --- |

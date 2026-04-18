@@ -24,6 +24,7 @@ OSI_MONCOUT = 0xFFEE
 OSI_MONISCNTC = 0xFFF1
 OSI_LOAD = 0xFFF4
 OSI_SAVE = 0xFFF7
+OSI_BASIC_ISCNTC_CONTINUE = 0xA62C
 
 
 class Console(Protocol):
@@ -95,6 +96,10 @@ class SessionConsole:
             self._rubout_pending = True
         return value
 
+    def control_c_ready(self) -> bool:
+        self._prefetch_terminal_input()
+        return bool(self._buffer and self._buffer[0] == 0x03)
+
     def write_byte(self, value: int) -> None:
         byte_value = value & 0x7F
 
@@ -125,6 +130,11 @@ class SessionConsole:
         if value in (0x08, 0x7F):
             return 0x5F
         return value
+
+    def _prefetch_terminal_input(self) -> None:
+        if self._buffer or self._terminal is None or not self._terminal.input_ready():
+            return
+        self._buffer.append(self._normalize_input(self._terminal.read_byte()))
 
 
 class StreamingFileRunOutput:
@@ -213,8 +223,9 @@ class OsiBasicMachine:
             return None
 
         if pc == OSI_MONISCNTC:
-            self.mpu.a = 0x00
-            self._return_from_subroutine()
+            control_c_ready = getattr(console, "control_c_ready", lambda: False)()
+            self.mpu.a = 0x01 if control_c_ready else 0x00
+            self.mpu.pc = OSI_BASIC_ISCNTC_CONTINUE
             return None
 
         if pc == OSI_LOAD:

@@ -162,6 +162,33 @@ run_gwbasic() {
     < /dev/null 2>>"${runtime_dir}/dosemu.log"
 }
 
+emit_filtered_dos_batch_diff() {
+  local source_path="$1"
+  local state_path="$2"
+  local current_filtered
+
+  current_filtered="$(mktemp)"
+  python3 "${ROOT_DIR}/src/dos_batch_filter.py" <"${source_path}" >"${current_filtered}"
+  python3 - "${state_path}" "${current_filtered}" <<'PY'
+from pathlib import Path
+import sys
+
+previous_path = Path(sys.argv[1])
+current_path = Path(sys.argv[2])
+previous_lines = previous_path.read_text(encoding="utf-8", errors="replace").splitlines()
+current_lines = current_path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+prefix = 0
+limit = min(len(previous_lines), len(current_lines))
+while prefix < limit and previous_lines[prefix] == current_lines[prefix]:
+    prefix += 1
+
+for line in current_lines[prefix:]:
+    print(line)
+PY
+  mv "${current_filtered}" "${state_path}"
+}
+
 run_gwbasic_file() {
   local runtime_dir="$1"
   local home_dir="$2"
@@ -217,79 +244,76 @@ run_gwbasic_file() {
   # Primary output goes to CBATCH.TXT via the DOS redirect; we keep the
   # terminal output as a fallback for environments where EMUFS writes fail.
   local terminal_output
+  local filtered_capture_state
+  local capture_streamed=false
   terminal_output="$(mktemp)"
+  filtered_capture_state="$(mktemp)"
+  : >"${filtered_capture_state}"
   # Raise nproc limit: dosemu2.bin spawns ~20 threads; if RLIMIT_NPROC is
   # tight the clone() syscall fails and dosemu2 deadlocks on a futex.
   ulimit -u unlimited 2>/dev/null || true
-  # Watchdog approach: run dosemu in background, poll for CBATCH.TXT, then
-    # kill dosemu as soon as output is ready (don't wait for EXITEMU/EXIT/EOF).
-    # Use setsid so the dosemu wrapper and dosemu2.bin share a process group
-    # (PGID = dosemu_pid).  This lets kill -- -PID terminate the entire tree,
-    # including dosemu2.bin which survives as an orphan if only the bash
-    # wrapper is killed.
-    setsid "${full_cmd[@]}" \
-      < /dev/null > "${terminal_output}" 2>>"${runtime_dir}/dosemu.log" &
-    local dosemu_pid=$!
-    local max_ms=0
-    if [[ -n "${timeout_spec}" && "${timeout_spec}" != "0" ]]; then
-      max_ms="$(timeout_spec_to_milliseconds "${timeout_spec}")"
+  # Watchdog approach: run dosemu in background, stream newly appended
+  # capture output while it runs, and only treat completion as success once
+  # the dosemu process actually exits.
+  # Use setsid so the dosemu wrapper and dosemu2.bin share a process group
+  # (PGID = dosemu_pid). This lets kill -- -PID terminate the entire tree.
+  setsid "${full_cmd[@]}" \
+    < /dev/null > "${terminal_output}" 2>>"${runtime_dir}/dosemu.log" &
+  local dosemu_pid=$!
+  local max_ms=0
+  if [[ -n "${timeout_spec}" && "${timeout_spec}" != "0" ]]; then
+    max_ms="$(timeout_spec_to_milliseconds "${timeout_spec}")"
+  fi
+  local elapsed_ms=0
+  local timed_out=false
+  while true; do
+    if [[ -f "${capture_path}" && -s "${capture_path}" ]]; then
+      emit_filtered_dos_batch_diff "${capture_path}" "${filtered_capture_state}"
+      capture_streamed=true
     fi
-    local elapsed_ms=0
-    local timed_out=false
-    while true; do
-      if ! kill -0 "${dosemu_pid}" 2>/dev/null; then
-        # dosemu exited on its own
-        wait "${dosemu_pid}" 2>/dev/null || status=$?
-        break
-      fi
-      if [[ -f "${capture_path}" && -s "${capture_path}" ]]; then
-        # Output is ready — kill entire process group
-        sleep 0.3
-        kill -- -"${dosemu_pid}" 2>/dev/null || true
-        wait "${dosemu_pid}" 2>/dev/null || true
-        break
-      fi
-      if (( max_ms > 0 && elapsed_ms >= max_ms )); then
-        # Capture diagnostics for all processes in the tree
-        {
-          echo "--- dosemu timeout diagnostic (pid=${dosemu_pid}) ---"
-          echo "  caller ulimit -u: $(ulimit -u 2>/dev/null)"
-          echo "  /proc/sys/kernel/threads-max: $(cat /proc/sys/kernel/threads-max 2>/dev/null)"
-          echo "  /proc/sys/kernel/pid_max: $(cat /proc/sys/kernel/pid_max 2>/dev/null)"
-          for pid in "${dosemu_pid}" $(cat /proc/${dosemu_pid}/task/${dosemu_pid}/children 2>/dev/null); do
-            echo "  --- pid=${pid} ---"
-            grep -E '^(Name|Pid|Threads|VmRSS):' /proc/${pid}/status 2>/dev/null | sed 's/^/    /'
-            awk '/Max processes/{print "    RLIMIT_NPROC: " $0}' /proc/${pid}/limits 2>/dev/null
-            for wf in /proc/${pid}/task/*/wchan; do
-              tid="${wf%/wchan}"; tid="${tid##*/}"
-              echo "    tid=${tid} wchan=$(cat "${wf}" 2>/dev/null)"
-              echo "    tid=${tid} stack:"
-              sed 's/^/      /' /proc/${pid}/task/${tid}/stack 2>/dev/null || true
-            done
+    if ! kill -0 "${dosemu_pid}" 2>/dev/null; then
+      wait "${dosemu_pid}" 2>/dev/null || status=$?
+      break
+    fi
+    if (( max_ms > 0 && elapsed_ms >= max_ms )); then
+      {
+        echo "--- dosemu timeout diagnostic (pid=${dosemu_pid}) ---"
+        echo "  caller ulimit -u: $(ulimit -u 2>/dev/null)"
+        echo "  /proc/sys/kernel/threads-max: $(cat /proc/sys/kernel/threads-max 2>/dev/null)"
+        echo "  /proc/sys/kernel/pid_max: $(cat /proc/sys/kernel/pid_max 2>/dev/null)"
+        for pid in "${dosemu_pid}" $(cat /proc/${dosemu_pid}/task/${dosemu_pid}/children 2>/dev/null); do
+          echo "  --- pid=${pid} ---"
+          grep -E '^(Name|Pid|Threads|VmRSS):' /proc/${pid}/status 2>/dev/null | sed 's/^/    /'
+          awk '/Max processes/{print "    RLIMIT_NPROC: " $0}' /proc/${pid}/limits 2>/dev/null
+          for wf in /proc/${pid}/task/*/wchan; do
+            tid="${wf%/wchan}"; tid="${tid##*/}"
+            echo "    tid=${tid} wchan=$(cat "${wf}" 2>/dev/null)"
+            echo "    tid=${tid} stack:"
+            sed 's/^/      /' /proc/${pid}/task/${tid}/stack 2>/dev/null || true
           done
-          echo "--- end diagnostic ---"
-        } >> "${runtime_dir}/dosemu.log" 2>/dev/null || true
-        kill -- -"${dosemu_pid}" 2>/dev/null || true
-        wait "${dosemu_pid}" 2>/dev/null || true
-        timed_out=true
-        break
-      fi
-      sleep 0.2
-      elapsed_ms=$(( elapsed_ms + 200 ))
-    done
-    cat "${terminal_output}" >> "${runtime_dir}/dosemu.log"
-    if [[ "${timed_out}" == true ]]; then
-      if [[ -f "${capture_path}" && -s "${capture_path}" ]]; then
-        status=0  # Output captured before kill; acceptable
-      else
-        status=124
-        echo "error: gwbasic did not complete within ${timeout_spec}; GW-BASIC may not have run (set --timeout or CLASSIC_BASIC_DOSEMU_BATCH_TIMEOUT to adjust)" >&2
-        echo "diagnostic info appended to ${runtime_dir}/dosemu.log" >&2
-      fi
+        done
+        echo "--- end diagnostic ---"
+      } >> "${runtime_dir}/dosemu.log" 2>/dev/null || true
+      kill -- -"${dosemu_pid}" 2>/dev/null || true
+      wait "${dosemu_pid}" 2>/dev/null || true
+      timed_out=true
+      status=124
+      break
     fi
+    sleep 0.2
+    elapsed_ms=$(( elapsed_ms + 200 ))
+  done
+  cat "${terminal_output}" >> "${runtime_dir}/dosemu.log"
+  if [[ "${timed_out}" == true ]]; then
+    echo "error: gwbasic did not complete within ${timeout_spec}; partial output may be incomplete" >&2
+    echo "diagnostic info appended to ${runtime_dir}/dosemu.log" >&2
+  fi
   if [[ -f "${capture_path}" ]] && [[ -s "${capture_path}" ]]; then
-    # Primary: CBATCH.TXT from DOS redirect (normal case).
-    python3 "${ROOT_DIR}/src/dos_batch_filter.py" <"${capture_path}"
+    if [[ "${capture_streamed}" == true ]]; then
+      emit_filtered_dos_batch_diff "${capture_path}" "${filtered_capture_state}"
+    else
+      python3 "${ROOT_DIR}/src/dos_batch_filter.py" <"${capture_path}"
+    fi
   else
     out_txt_path="$(find "${runtime_dir}/drive_c" -maxdepth 1 -iname 'out.txt' 2>/dev/null | head -1)"
     if [[ -n "${out_txt_path}" ]] && [[ -s "${out_txt_path}" ]]; then
@@ -301,6 +325,7 @@ run_gwbasic_file() {
     fi
     out_txt_path=""  # already handled above
   fi
+  rm -f "${filtered_capture_state}"
   [[ -n "${terminal_output}" ]] && rm -f "${terminal_output}"
 
   if [[ -n "${out_txt_path}" ]] && [[ -s "${out_txt_path}" ]]; then

@@ -20,6 +20,7 @@ class PC8001CliTests(unittest.TestCase):
         config = machine_cls.call_args.args[0]
         self.assertIsNone(config.startup_program)
         self.assertTrue(config.run_startup)
+        self.assertIsNone(config.batch_rounds)
         machine.run_terminal.assert_called_once_with()
 
     def test_interactive_program_load_disables_auto_run(self) -> None:
@@ -46,7 +47,34 @@ class PC8001CliTests(unittest.TestCase):
         config = machine_cls.call_args.args[0]
         self.assertEqual(str(config.startup_program), "demo.bas")
         self.assertTrue(config.run_startup)
+        self.assertIsNone(config.batch_rounds)
         machine.run_terminal.assert_called_once_with()
+
+    def test_max_rounds_argument_sets_batch_round_limit(self) -> None:
+        with patch("pc8001_terminal.cli.PC8001Machine") as machine_cls:
+            machine = machine_cls.return_value
+            machine.run_terminal.return_value = 0
+
+            result = main(["--max-rounds", "7", "demo.bas"])
+
+        self.assertEqual(result, 0)
+        config = machine_cls.call_args.args[0]
+        self.assertEqual(config.batch_rounds, 7)
+
+    def test_max_rounds_environment_variable_overrides_cli_default(self) -> None:
+        with patch("pc8001_terminal.cli.PC8001Machine") as machine_cls, patch.dict(
+            "os.environ",
+            {"CLASSIC_BASIC_PC8001_BATCH_ROUNDS": "9"},
+            clear=False,
+        ):
+            machine = machine_cls.return_value
+            machine.run_terminal.return_value = 0
+
+            result = main(["demo.bas"])
+
+        self.assertEqual(result, 0)
+        config = machine_cls.call_args.args[0]
+        self.assertEqual(config.batch_rounds, 9)
 
     def test_input_request_error_returns_exit_code_two(self) -> None:
         stderr = io.StringIO()
@@ -58,6 +86,17 @@ class PC8001CliTests(unittest.TestCase):
 
         self.assertEqual(result, 2)
         self.assertIn("error: interactive program input is not supported", stderr.getvalue())
+
+    def test_timeout_error_returns_exit_code_two(self) -> None:
+        stderr = io.StringIO()
+        with patch("pc8001_terminal.cli.PC8001Machine") as machine_cls, patch("sys.stderr", stderr):
+            machine = machine_cls.return_value
+            machine.run_terminal.side_effect = TimeoutError("timed out waiting for N-BASIC batch program to settle")
+
+            result = main(["demo.bas"])
+
+        self.assertEqual(result, 2)
+        self.assertIn("error: timed out waiting for N-BASIC batch program to settle", stderr.getvalue())
 
 
 if __name__ == "__main__":

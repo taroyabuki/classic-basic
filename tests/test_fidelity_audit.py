@@ -71,6 +71,10 @@ def _dosemu_available() -> bool:
     return shutil.which("dosemu") is not None or shutil.which("dosemu2") is not None
 
 
+def _timeout_available() -> bool:
+    return shutil.which("timeout") is not None
+
+
 def _mame_available() -> str | None:
     for candidate in (shutil.which("mame"), "/usr/games/mame"):
         if candidate and Path(candidate).is_file():
@@ -98,6 +102,20 @@ def _n88basic_runtime_available() -> bool:
 
 def _nbasic_runtime_available() -> bool:
     return (ROOT_DIR / "downloads" / "pc8001" / "N80_11.rom").is_file()
+
+
+def _fm7basic_runtime_available() -> bool:
+    return _mame_available() is not None and (ROOT_DIR / "downloads" / "fm7basic" / "mame-roms" / "fm77av").is_dir()
+
+
+def _fm11basic_runtime_available() -> bool:
+    return shutil.which("wine") is not None and (
+        ROOT_DIR / "downloads" / "fm11basic" / "staged" / "emulator-x86" / "Fm11.exe"
+    ).is_file() and (
+        ROOT_DIR / "downloads" / "fm11basic" / "staged" / "disks" / "fb2hd00.img"
+    ).is_file() and (
+        ROOT_DIR / "downloads" / "fm11basic" / "staged" / "roms"
+    ).is_dir()
 
 
 _DEMO_BATCH_EXCLUDED = {"fm7basic"}
@@ -138,6 +156,22 @@ def _demo_batch_cases() -> list[dict[str, object]]:
     return cases
 
 
+def _infinite_loop_batch_cases() -> list[dict[str, object]]:
+    test_program = TEST_DATA_DIR / "test.bas"
+    return [
+        {"name": "6502", "command": ["timeout", "3", "bash", "run/6502.sh", "--run", "--file", str(test_program)], "available": lambda: True},
+        {"name": "basic80", "command": ["timeout", "3", "bash", "run/basic80.sh", "--run", "--file", str(test_program)], "available": lambda: True},
+        {"name": "grantsbasic", "command": ["timeout", "3", "bash", "run/grantsbasic.sh", "--run", "--file", str(test_program)], "available": _grantsbasic_runtime_available},
+        {"name": "nbasic", "command": ["timeout", "3", "bash", "run/nbasic.sh", "--run", "--file", str(test_program)], "available": _nbasic_runtime_available},
+        {"name": "n88basic", "command": ["timeout", "3", "bash", "run/n88basic.sh", "--run", "--file", str(test_program)], "available": _n88basic_runtime_available},
+        {"name": "msxbasic", "command": ["timeout", "3", "bash", "run/msxbasic.sh", "--run", "--file", str(test_program)], "available": lambda: shutil.which("openmsx") is not None},
+        {"name": "gwbasic", "command": ["timeout", "3", "bash", "run/gwbasic.sh", "--run", "--file", str(test_program)], "available": _dosemu_available},
+        {"name": "qbasic", "command": ["timeout", "3", "bash", "run/qbasic.sh", "--run", "--file", str(test_program)], "available": _dosemu_available},
+        {"name": "fm7basic", "command": ["timeout", "3", "bash", "run/fm7basic.sh", "--run", "--file", str(test_program)], "available": _fm7basic_runtime_available},
+        {"name": "fm11basic", "command": ["timeout", "3", "bash", "run/fm11basic.sh", "--run", "--file", str(test_program)], "available": _fm11basic_runtime_available},
+    ]
+
+
 class FidelityAuditTests(unittest.TestCase):
     def test_fm7basic_fm77av_romset_matches_local_mame(self) -> None:
         mame = _mame_available()
@@ -169,6 +203,20 @@ class FidelityAuditTests(unittest.TestCase):
                     self.assertIn(snippet, result.stdout)
         if not ran_any:
             self.skipTest("no demo batch runtimes are installed")
+
+    def test_infinite_loop_batch_does_not_exit_cleanly(self) -> None:
+        if not _timeout_available():
+            self.skipTest("timeout command is not installed")
+        ran_any = False
+        for case in _infinite_loop_batch_cases():
+            if not case["available"]():
+                continue
+            ran_any = True
+            with self.subTest(runtime=case["name"]):
+                result = _run(case["command"], timeout=10)
+                self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        if not ran_any:
+            self.skipTest("no infinite-loop batch runtimes are installed")
 
     def test_6502_exec_smoke(self) -> None:
         result = _run(["bash", "run/6502.sh", "--exec", "PRINT 2+2"])

@@ -83,6 +83,15 @@ if [[ -n "${file_path}" && "${explicit_rom}" != "1" && ! -f "${default_rom}" ]];
   die "N-BASIC ROM is not prepared: ${default_rom}. Run ./setup/nbasic.sh first."
 fi
 
+python_cmd="${CLASSIC_BASIC_PYTHON:-}"
+if [[ -z "${python_cmd}" ]]; then
+  if command -v pypy3 >/dev/null 2>&1; then
+    python_cmd="pypy3"
+  else
+    python_cmd="python3"
+  fi
+fi
+
 if [[ -n "${file_path}" ]]; then
   if [[ "${run_program}" == "1" ]]; then
     args+=("${file_path}")
@@ -91,4 +100,4 @@ if [[ -n "${file_path}" ]]; then
   fi
 fi
 
-exec env PYTHONPATH="${ROOT_DIR}/src" python3 -m pc8001_terminal "${args[@]}"
+exec env PYTHONPATH="${ROOT_DIR}/src" "${python_cmd}" -m pc8001_terminal "${args[@]}"

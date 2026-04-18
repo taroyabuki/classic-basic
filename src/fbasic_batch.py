@@ -293,9 +293,12 @@ def is_source_listing_line(text: str) -> bool:
     match = re.match(r"^\s*\d+\s*(.*)$", text)
     if match is None:
         return False
-    body = match.group(1).upper()
+    body = match.group(1).lstrip()
     if not body:
         return False
+    if not (body[0].isalpha() or body[0] in {"?", "'", ":"}):
+        return False
+    body = body.upper()
     if any(keyword in body for keyword in _SOURCE_LISTING_KEYWORDS):
         return True
     if any(token in body for token in ("=", "+", "-", "*", "/", "(", ")", '"', "<", ">")):
@@ -517,11 +520,28 @@ def _append_lines_to_input_queue(input_path: Path, lines: list[str]) -> None:
 def _terminate_launched_process(proc: subprocess.Popen[bytes]) -> None:
     if proc.poll() is not None:
         return
-    proc.terminate()
+    pid = getattr(proc, "pid", None)
+    terminated = False
+    if isinstance(pid, int):
+        try:
+            os.killpg(pid, signal.SIGTERM)
+            terminated = True
+        except OSError:
+            terminated = False
+    if not terminated:
+        proc.terminate()
     try:
         proc.wait(timeout=5.0)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        killed = False
+        if isinstance(pid, int):
+            try:
+                os.killpg(pid, signal.SIGKILL)
+                killed = True
+            except OSError:
+                killed = False
+        if not killed:
+            proc.kill()
         proc.wait(timeout=5.0)
 
 
@@ -529,23 +549,31 @@ def _wait_for_fm7_snapshot(
     *,
     proc: subprocess.Popen[bytes],
     output_path: Path,
+    progress: _FM7BatchProgress,
     settle_seconds: float,
-    predicate: Callable[[list[str]], bool],
-    on_snapshot: Callable[[list[str]], None] | None,
     command: list[str],
     timeout_seconds: float | None,
     deadline: float | None,
     exit_error: str,
+    emit_output_line: Callable[[str], None] | None = None,
 ) -> list[str]:
     previous_snapshot: list[str] | None = None
     stable_since: float | None = None
+    previous_output_lines: list[str] | None = None
 
     while True:
         snapshot = _read_text_capture_lines(output_path)
-        predicate_matched = predicate(snapshot)
-        if on_snapshot is not None:
-            on_snapshot(snapshot)
-        if predicate_matched:
+        ready = progress.observe(snapshot)
+        output_lines = extract_output_lines(snapshot, snapshot) if progress.saw_trigger and progress.saw_run else []
+        if any(is_input_prompt_line(line) for line in output_lines):
+            raise UnsupportedProgramInputError("program input is not supported in --run mode")
+        if emit_output_line is not None and output_lines:
+            diff_lines = _emit_console_diff(previous_output_lines or [], output_lines)
+            for line in diff_lines:
+                emit_output_line(line)
+            previous_output_lines = list(output_lines)
+
+        if ready:
             if snapshot != previous_snapshot:
                 previous_snapshot = list(snapshot)
                 stable_since = time.monotonic()
@@ -559,7 +587,7 @@ def _wait_for_fm7_snapshot(
             stable_since = None
 
         if proc.poll() is not None:
-            if predicate(snapshot):
+            if ready:
                 return snapshot
             raise RuntimeError(exit_error)
 
@@ -581,7 +609,6 @@ def _run_fm7_batch_capture(
     program_lines: list[str],
     temp_dir: Path,
     timeout_seconds: float | None,
-    emit_lines: Callable[[list[str]], None] | None = None,
 ) -> list[str]:
     command = [mame_command, driver]
     deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
@@ -605,29 +632,18 @@ def _run_fm7_batch_capture(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    previous_output_lines: list[str] = []
-
-    def _emit_snapshot_output(snapshot: list[str]) -> None:
-        nonlocal previous_output_lines
-        if emit_lines is None:
-            return
-        current_output_lines = extract_output_lines(snapshot, snapshot)
-        diff_lines = _emit_console_diff(previous_output_lines, current_output_lines)
-        if diff_lines:
-            emit_lines(diff_lines)
-        previous_output_lines = current_output_lines
 
     try:
         return _wait_for_fm7_snapshot(
             proc=proc,
             output_path=output_path,
+            progress=progress,
             settle_seconds=_fm7_default_settle_seconds(driver, phase="run"),
-            predicate=progress.observe,
-            on_snapshot=_emit_snapshot_output,
             command=command,
             timeout_seconds=timeout_seconds,
             deadline=deadline,
             exit_error="unable to detect FM7 batch execution in console RAM",
+            emit_output_line=lambda line: print(line, flush=True),
         )
     finally:
         _terminate_launched_process(proc)
@@ -1317,6 +1333,8 @@ def _run_mame_headful_capture(
         ["Xvfb", display, "-screen", "0", "1280x960x24"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        preexec_fn=_parent_death_preexec_fn(),
     )
     mame_proc: subprocess.Popen[bytes] | None = None
     env = os.environ.copy()
@@ -1329,6 +1347,8 @@ def _run_mame_headful_capture(
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            preexec_fn=_parent_death_preexec_fn(),
         )
         deadline = time.monotonic() + (timeout_seconds if timeout_seconds is not None else 120.0)
         window_id: str | None = None
@@ -1411,16 +1431,8 @@ def _run_mame_headful_capture(
         return stable_lines
     finally:
         if mame_proc is not None and mame_proc.poll() is None:
-            mame_proc.terminate()
-            try:
-                mame_proc.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                mame_proc.kill()
-        xvfb.terminate()
-        try:
-            xvfb.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            xvfb.kill()
+            _terminate_launched_process(mame_proc)
+        _terminate_launched_process(xvfb)
 
 
 def run_batch(
@@ -1445,13 +1457,6 @@ def run_batch(
         lua_path = temp_dir / "capture.lua"
         output_lines: list[str] = []
         if driver in {"fm7", "fm77av"}:
-            fm7_emitted_output: list[str] = []
-
-            def _emit_fm7_lines(lines: list[str]) -> None:
-                for line in lines:
-                    print(line, flush=True)
-                fm7_emitted_output.extend(lines)
-
             captured_lines = _run_fm7_batch_capture(
                 mame_command=mame_command,
                 rompath=rompath,
@@ -1461,11 +1466,8 @@ def run_batch(
                 program_lines=program_lines,
                 temp_dir=temp_dir,
                 timeout_seconds=timeout_seconds,
-                emit_lines=_emit_fm7_lines,
             )
             output_lines = extract_output_lines(captured_lines, captured_lines)
-            for line in _emit_console_diff(fm7_emitted_output, output_lines):
-                print(line, flush=True)
             if not captured_lines:
                 raise RuntimeError("unable to detect FM7 batch execution in console RAM")
         elif driver in {"pc8801mk2"}:
@@ -1554,7 +1556,9 @@ def run_batch(
             output_lines = _repair_output_lines(output_lines, string_literals)
         if any(is_input_prompt_line(line) for line in output_lines):
             raise UnsupportedProgramInputError("program input is not supported in --run mode")
-        if output_lines and driver not in {"fm7", "fm77av"}:
+        if output_lines and driver in {"fm7", "fm77av"}:
+            pass
+        elif output_lines:
             print("\n".join(output_lines))
         return 0
     finally:

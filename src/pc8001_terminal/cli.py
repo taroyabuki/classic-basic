@@ -49,11 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-rounds",
         type=int,
-        default=32,
+        default=None,
         help=(
-            "Number of run-slice rounds before giving up in batch mode. "
-            "Increase for programs with long computation between outputs. "
-            "Default: 32. Env: CLASSIC_BASIC_PC8001_BATCH_ROUNDS"
+            "Maximum number of run-slice rounds in batch mode. "
+            "Unset means no round limit. "
+            "When this option or CLASSIC_BASIC_PC8001_BATCH_ROUNDS is set, "
+            "that explicit limit is used."
         ),
     )
     parser.add_argument(
@@ -168,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
                 startup_program=Path(args.program) if args.program else None,
                 run_startup=not args.interactive,
                 max_steps=args.max_steps,
-                batch_rounds=int(os.environ.get("CLASSIC_BASIC_PC8001_BATCH_ROUNDS", args.max_rounds)),
+                batch_rounds=_parse_batch_rounds(args.max_rounds),
                 vram_start=args.vram_start,
                 vram_stride=args.vram_stride,
                 vram_cell_width=args.vram_cell_width,
@@ -208,13 +209,20 @@ def main(argv: list[str] | None = None) -> int:
         return rc
     except KeyboardInterrupt:
         return 130
-    except (FileNotFoundError, InputRequestError, ValueError) as exc:
+    except (FileNotFoundError, InputRequestError, TimeoutError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
 
 def _parse_hex(value: str) -> int:
     return int(value, 0)
+
+
+def _parse_batch_rounds(cli_value: int | None) -> int | None:
+    env_value = os.environ.get("CLASSIC_BASIC_PC8001_BATCH_ROUNDS")
+    if env_value is not None:
+        return int(env_value)
+    return cli_value
 
 
 def _parse_rom_spec(spec: str) -> RomSpec:

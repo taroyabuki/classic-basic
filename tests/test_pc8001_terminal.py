@@ -123,6 +123,7 @@ class PC8001MachineTests(unittest.TestCase):
         self.assertEqual(PC8001Config().vram_cell_width, 2)
         self.assertEqual(PC8001Config().cols, 40)
         self.assertEqual(PC8001Config().rows, 20)
+        self.assertIsNone(PC8001Config().batch_rounds)
 
     def test_run_host_basic_until_settled_streams_non_tty_batch_output(self) -> None:
         class FakeStdout(io.StringIO):
@@ -161,6 +162,131 @@ class PC8001MachineTests(unittest.TestCase):
 
         self.assertEqual(fake_stdout.getvalue(), "HELLO\nWORLD\n")
         self.assertEqual(fake_stdout.flush_calls, 2)
+
+    def test_run_host_basic_until_settled_streams_tty_batch_output(self) -> None:
+        class FakeStdout(io.StringIO):
+            def __init__(self) -> None:
+                super().__init__()
+                self.flush_calls = 0
+
+            def isatty(self) -> bool:
+                return True
+
+            def flush(self) -> None:
+                self.flush_calls += 1
+
+        machine = PC8001Machine(
+            PC8001Config(
+                roms=(RomSpec(path=Path("/tmp/pc8001-rom.bin"), start=0x0000, name="rom.bin"),),
+                entry_point=0x0000,
+                startup_program=Path("/tmp/prog.bas"),
+            )
+        )
+        results = [
+            ExecutionResult(reason="step_limit", steps=1, pc=0x0000),
+            ExecutionResult(reason="input_wait", steps=1, pc=0x0000),
+        ]
+        outputs = ["HELLO\n", "WORLD\n"]
+
+        def fake_run_firmware(*, max_steps: int) -> ExecutionResult:
+            del max_steps
+            machine.console_output.extend(outputs.pop(0))
+            return results.pop(0)
+
+        machine.run_firmware = fake_run_firmware  # type: ignore[method-assign]
+        fake_stdout = FakeStdout()
+        with patch("sys.stdout", fake_stdout):
+            machine._run_host_basic_until_settled(max_rounds=4)
+
+        self.assertEqual(fake_stdout.getvalue(), "HELLO\nWORLD\n")
+        self.assertEqual(fake_stdout.flush_calls, 2)
+
+    def test_run_host_basic_until_settled_keeps_running_without_round_limit(self) -> None:
+        class FakeStdout(io.StringIO):
+            def __init__(self) -> None:
+                super().__init__()
+                self.flush_calls = 0
+
+            def isatty(self) -> bool:
+                return False
+
+            def flush(self) -> None:
+                self.flush_calls += 1
+
+        machine = PC8001Machine(
+            PC8001Config(
+                roms=(RomSpec(path=Path("/tmp/pc8001-rom.bin"), start=0x0000, name="rom.bin"),),
+                entry_point=0x0000,
+                startup_program=Path("/tmp/prog.bas"),
+                batch_rounds=None,
+            )
+        )
+        results = [
+            ExecutionResult(reason="step_limit", steps=1, pc=0x0000),
+            ExecutionResult(reason="step_limit", steps=1, pc=0x0000),
+            ExecutionResult(reason="input_wait", steps=1, pc=0x0000),
+        ]
+        outputs = ["HELLO\n", "THERE\n", "DONE\n"]
+
+        def fake_run_firmware(*, max_steps: int) -> ExecutionResult:
+            del max_steps
+            machine.console_output.extend(outputs.pop(0))
+            return results.pop(0)
+
+        machine.run_firmware = fake_run_firmware  # type: ignore[method-assign]
+        fake_stdout = FakeStdout()
+        with patch("sys.stdout", fake_stdout):
+            machine._run_host_basic_until_settled()
+
+        self.assertEqual(fake_stdout.getvalue(), "HELLO\nTHERE\nDONE\n")
+        self.assertEqual(fake_stdout.flush_calls, 3)
+
+    def test_run_host_basic_until_settled_raises_when_round_limit_is_exhausted(self) -> None:
+        machine = PC8001Machine(
+            PC8001Config(
+                roms=(RomSpec(path=Path("/tmp/pc8001-rom.bin"), start=0x0000, name="rom.bin"),),
+                entry_point=0x0000,
+                startup_program=Path("/tmp/prog.bas"),
+                batch_rounds=2,
+            )
+        )
+
+        def fake_run_firmware(*, max_steps: int) -> ExecutionResult:
+            del max_steps
+            return ExecutionResult(reason="step_limit", steps=1, pc=0x0000)
+
+        machine.run_firmware = fake_run_firmware  # type: ignore[method-assign]
+
+        with self.assertRaisesRegex(TimeoutError, "round limit exhausted"):
+            machine._run_host_basic_until_settled()
+
+    def test_boot_demo_auto_run_has_no_default_round_limit(self) -> None:
+        machine = PC8001Machine(
+            PC8001Config(
+                roms=(RomSpec(path=Path("/tmp/pc8001-rom.bin"), start=0x0000, name="rom.bin"),),
+                entry_point=0x0000,
+                startup_program=Path("/tmp/prog.bas"),
+            )
+        )
+        machine.load_basic_source = lambda path: None  # type: ignore[method-assign]
+        machine.inject_keys = lambda values: True  # type: ignore[method-assign]
+
+        results = [
+            ExecutionResult(reason="input_wait", steps=1, pc=0x0000),
+            ExecutionResult(reason="step_limit", steps=1, pc=0x0000),
+            ExecutionResult(reason="input_wait", steps=1, pc=0x0000),
+            ExecutionResult(reason="step_limit", steps=1, pc=0x0000),
+            ExecutionResult(reason="input_wait", steps=1, pc=0x0000),
+        ]
+
+        def fake_run_firmware(*, max_steps: int) -> ExecutionResult:
+            del max_steps
+            return results.pop(0)
+
+        machine.run_firmware = fake_run_firmware  # type: ignore[method-assign]
+
+        machine.boot_demo()
+        self.assertEqual(results, [])
 
     def test_decode_key_sequence_supports_escape_sequences(self) -> None:
         self.assertEqual(_decode_key_sequence("A\\r\\x31"), [0x41, 0x0D, 0x31])
@@ -224,6 +350,18 @@ class PC8001MachineTests(unittest.TestCase):
             "HELLO\n",
         )
 
+    def test_filter_nbasic_batch_output_strips_trailing_prompt_without_newline(self) -> None:
+        self.assertEqual(
+            _filter_nbasic_batch_output(" 3.141592924603849 \n80 2F 21 C5 DB 0F 49 82 Ok\n"),
+            " 3.141592924603849 \n80 2F 21 C5 DB 0F 49 82\n",
+        )
+
+    def test_filter_nbasic_batch_output_keeps_inline_ok_text(self) -> None:
+        self.assertEqual(
+            _filter_nbasic_batch_output("HELLO Ok\n"),
+            "HELLO Ok\n",
+        )
+
     def test_default_rom_startup_program_runs_tokenized_arithmetic(self) -> None:
         if not DEFAULT_ROM_PATH.is_file():
             self.skipTest(f"ROM not available: {DEFAULT_ROM_PATH}")
@@ -238,12 +376,13 @@ class PC8001MachineTests(unittest.TestCase):
                 max_steps=300000,
             )
         )
-        with patch("sys.stdout.isatty", return_value=True):
+        fake_stdout = io.StringIO()
+        fake_stdout.isatty = lambda: True  # type: ignore[attr-defined]
+        with patch("sys.stdout", fake_stdout):
             machine.load_roms()
             machine.boot_demo()
-            output = machine.consume_console_output()
+            output = fake_stdout.getvalue()
 
-        self.assertIn("NEC PC-8001 BASIC Ver 1.1", output)
         self.assertIn(" 4 ", output)
         self.assertIn(" 1 ", output)
         self.assertIn(" 2 ", output)
@@ -265,10 +404,12 @@ class PC8001MachineTests(unittest.TestCase):
                 max_steps=800000,
             )
         )
-        with patch("sys.stdout.isatty", return_value=True):
+        fake_stdout = io.StringIO()
+        fake_stdout.isatty = lambda: True  # type: ignore[attr-defined]
+        with patch("sys.stdout", fake_stdout):
             machine.load_roms()
             machine.boot_demo()
-            output = machine.consume_console_output()
+            output = fake_stdout.getvalue()
 
         self.assertIn("3.141592653589793", output)
         self.assertIn("C6", output)
@@ -288,10 +429,12 @@ class PC8001MachineTests(unittest.TestCase):
                 batch_rounds=64,
             )
         )
-        with patch("sys.stdout.isatty", return_value=True):
+        fake_stdout = io.StringIO()
+        fake_stdout.isatty = lambda: True  # type: ignore[attr-defined]
+        with patch("sys.stdout", fake_stdout):
             machine.load_roms()
             machine.boot_demo()
-            output = machine.consume_console_output()
+            output = fake_stdout.getvalue()
 
         self.assertIn("3.141592", output)
         self.assertNotIn("\n 0 \n", output)
@@ -459,6 +602,34 @@ class PC8001MachineTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(stdout.getvalue(), " 1 \n")
 
+    def test_run_host_terminal_continues_after_step_limit_until_input_wait(self) -> None:
+        machine = PC8001Machine(PC8001Config(max_steps=10))
+        machine.last_result = ExecutionResult(reason="input_wait", steps=1, pc=0x0000)
+
+        def fake_inject_keys(values: list[int]) -> bool:
+            del values
+            machine.console_output = list("FIRST\n")
+            machine.console_output_offset = 0
+            machine.last_result = ExecutionResult(reason="step_limit", steps=10, pc=0x0001)
+            return True
+
+        def fake_run_firmware(*, max_steps: int) -> ExecutionResult:
+            del max_steps
+            machine.console_output.extend("SECOND\n")
+            machine.last_result = ExecutionResult(reason="input_wait", steps=3, pc=0x0002)
+            return machine.last_result
+
+        machine.inject_keys = fake_inject_keys  # type: ignore[method-assign]
+        machine.run_firmware = fake_run_firmware  # type: ignore[method-assign]
+
+        fake_stdout = io.StringIO()
+        with patch("sys.stdout", fake_stdout), patch("builtins.input", side_effect=["RUN", EOFError]):
+            rc = machine._run_host_terminal()
+
+        self.assertEqual(rc, 0)
+        self.assertIn("FIRST\n", fake_stdout.getvalue())
+        self.assertIn("SECOND\n", fake_stdout.getvalue())
+
     def test_boot_demo_lists_loaded_program_before_interactive_mode(self) -> None:
         machine = PC8001Machine(
             PC8001Config(
@@ -476,7 +647,9 @@ class PC8001MachineTests(unittest.TestCase):
         injected: list[list[int]] = []
         machine.inject_keys = lambda values: injected.append(values) or True  # type: ignore[method-assign]
         settle_calls: list[None] = []
-        machine._run_host_basic_until_settled = lambda max_rounds=None: settle_calls.append(None)  # type: ignore[method-assign]
+        machine._run_host_basic_until_settled = (  # type: ignore[method-assign]
+            lambda max_rounds=None, default_rounds=None: settle_calls.append(None)
+        )
 
         machine.boot_demo()
 

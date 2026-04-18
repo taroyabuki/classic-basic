@@ -17,7 +17,7 @@ Usage:
 What it does:
   1. Boot OSI Microsoft BASIC for 6502 on a vendored 6502 emulator
   2. Auto-answer the initial MEMORY SIZE? / TERMINAL WIDTH? prompts
-  3. With no --file/--exec, start the interactive terminal
+  3. With no --file/--exec, start the interactive terminal (Ctrl-C stops RUN, Ctrl-D exits)
   4. With --file PROGRAM.bas, load the program and drop into the interactive terminal
   5. With --run --file PROGRAM.bas, run the program and exit
   6. With --exec, execute statements in direct mode and exit

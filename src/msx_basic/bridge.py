@@ -7,11 +7,14 @@ Replies arrive as ``<reply result="ok">output</reply>`` or
 """
 from __future__ import annotations
 
+import signal
 import os
 import subprocess
 import threading
 import time
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape as xml_escape
+from collections.abc import Callable
 from queue import Empty, Queue
 from typing import Iterator
 
@@ -21,6 +24,54 @@ _SCREEN_CURSOR_MARKER = "\n@@CURSOR_ROW@@"
 
 class OpenMSXError(RuntimeError):
     """Raised when openMSX returns a ``result="nok"`` reply."""
+
+
+def _parent_death_preexec_fn() -> Callable[[], None] | None:
+    if os.name != "posix":
+        return None
+
+    def _set_parent_death_signal() -> None:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
+            err = ctypes.get_errno()
+            raise OSError(err, os.strerror(err))
+
+    return _set_parent_death_signal
+
+
+def _terminate_process(proc: subprocess.Popen[bytes] | None, *, use_process_group: bool) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+
+    pid = getattr(proc, "pid", None)
+    terminated = False
+    if use_process_group and isinstance(pid, int):
+        try:
+            os.killpg(pid, signal.SIGTERM)
+            terminated = True
+        except OSError:
+            terminated = False
+    if not terminated:
+        proc.terminate()
+
+    try:
+        proc.wait(timeout=3)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    killed = False
+    if use_process_group and isinstance(pid, int):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+            killed = True
+        except OSError:
+            killed = False
+    if not killed:
+        proc.kill()
+    proc.wait(timeout=3)
 
 
 class OpenMSXBridge:
@@ -91,6 +142,8 @@ class OpenMSXBridge:
             stderr=subprocess.DEVNULL,
             bufsize=0,  # unbuffered: read(N) returns as soon as any bytes arrive
             env=env,
+            start_new_session=True,
+            preexec_fn=_parent_death_preexec_fn(),
         )
         self._reader_thread = threading.Thread(
             target=self._read_loop, daemon=True, name="openmsx-reader"
@@ -111,8 +164,7 @@ class OpenMSXBridge:
         except Exception:
             pass
         finally:
-            if self._proc.poll() is None:
-                self._proc.terminate()
+            _terminate_process(self._proc, use_process_group=True)
             self._proc = None
             self._reader_thread = None
             self._reply_queue = Queue()
@@ -238,7 +290,8 @@ class OpenMSXBridge:
     def _send_raw(self, tcl_code: str) -> None:
         assert self._proc is not None, "Bridge not started"
         assert self._proc.stdin is not None
-        self._proc.stdin.write(f"<command>{tcl_code}</command>\n".encode())
+        escaped = xml_escape(tcl_code)
+        self._proc.stdin.write(f"<command>{escaped}</command>\n".encode())
         self._proc.stdin.flush()
 
     def _read_loop(self) -> None:

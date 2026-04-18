@@ -89,6 +89,43 @@ def _parent_death_preexec_fn() -> Callable[[], None] | None:
     return _set_parent_death_signal
 
 
+def _terminate_process(proc: subprocess.Popen[str] | None, *, use_process_group: bool) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+
+    pid = getattr(proc, "pid", None)
+    terminated = False
+    if use_process_group and isinstance(pid, int):
+        try:
+            os.killpg(pid, signal.SIGTERM)
+            terminated = True
+        except ProcessLookupError:
+            return
+        except OSError:
+            terminated = False
+    if not terminated:
+        proc.terminate()
+
+    try:
+        proc.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    killed = False
+    if use_process_group and isinstance(pid, int):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+            killed = True
+        except ProcessLookupError:
+            return
+        except OSError:
+            killed = False
+    if not killed:
+        proc.kill()
+    proc.wait(timeout=5)
+
+
 def require_tool(name: str) -> None:
     if shutil.which(name) is None:
         raise BasicRuntimeError(f"missing required tool: {name}")
@@ -116,6 +153,15 @@ def _remaining_timeout(deadline: float | None, *, fallback: float, message: str)
     if remaining <= 0:
         raise BasicTimeoutError(message)
     return max(0.1, min(fallback, remaining))
+
+
+def _full_remaining_timeout(deadline: float | None, *, message: str) -> float | None:
+    if deadline is None:
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise BasicTimeoutError(message)
+    return max(0.1, remaining)
 
 
 def _command_timeout(deadline: float | None, *, fallback: float, message: str) -> float | None:
@@ -243,24 +289,10 @@ class RuntimeSession:
 
     def close(self) -> None:
         if self.wine_proc is not None and self.wine_proc.poll() is None:
-            try:
-                os.killpg(self.wine_proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                self.wine_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(self.wine_proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            _terminate_process(self.wine_proc, use_process_group=True)
         self._shutdown_wine_services()
         if self.xvfb_proc is not None and self.xvfb_proc.poll() is None:
-            self.xvfb_proc.terminate()
-            try:
-                self.xvfb_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.xvfb_proc.kill()
+            _terminate_process(self.xvfb_proc, use_process_group=True)
         shutil.rmtree(self.tempdir, ignore_errors=True)
 
     def _shutdown_wine_services(self) -> None:
@@ -365,6 +397,7 @@ class RuntimeSession:
                 ["Xvfb", display, "-screen", "0", "1280x1024x24"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                start_new_session=True,
                 preexec_fn=_parent_death_preexec_fn(),
             )
             _sleep_with_deadline(
@@ -392,8 +425,7 @@ class RuntimeSession:
                 self.display = display
                 self.xvfb_proc = proc
                 return
-            proc.terminate()
-            proc.wait(timeout=5)
+            _terminate_process(proc, use_process_group=True)
         raise BasicRuntimeError("failed to start Xvfb")
 
     def _prepare_emulator(self) -> None:
@@ -1216,7 +1248,13 @@ def handle_startup_prompts(session: RuntimeSession, *, deadline: float | None = 
 
         matched_index = _startup_prompt_index(screen, remaining_prompts)
         if matched_index is None:
-            screen = session.wait_for_text(remaining_prompts, timeout=8.0, deadline=deadline)
+            screen = session.wait_for_text(
+                remaining_prompts,
+                timeout=8.0
+                if deadline is None
+                else _full_remaining_timeout(deadline, message="timed out waiting for FM-11 startup prompt"),
+                deadline=deadline,
+            )
             continue
 
         remaining_prompts = remaining_prompts[matched_index:]
@@ -1229,7 +1267,14 @@ def handle_startup_prompts(session: RuntimeSession, *, deadline: float | None = 
         screen = session.copy_screen(deadline=deadline)
         remaining_prompts = remaining_prompts[1:]
 
-    return wait_for_ready(session, screen, timeout=15.0, deadline=deadline)
+    return wait_for_ready(
+        session,
+        screen,
+        timeout=15.0
+        if deadline is None
+        else _full_remaining_timeout(deadline, message="timed out waiting for BASIC prompt"),
+        deadline=deadline,
+    )
 
 
 def _run_basic_once(
@@ -1267,11 +1312,9 @@ def _run_basic_once(
                 raw_screen = wait_for_ready(
                     session,
                     before,
-                    timeout=_remaining_timeout(
-                        deadline,
-                        fallback=10.0,
-                        message="timed out waiting for BASIC prompt",
-                    ),
+                    timeout=10.0
+                    if deadline is None
+                    else _full_remaining_timeout(deadline, message="timed out waiting for BASIC prompt"),
                     deadline=deadline,
                 )
             except BasicTimeoutError:
@@ -1287,9 +1330,8 @@ def _run_basic_once(
                 'PRINT "CBATCHBEGIN"\nRUN\n',
                 timeout=None
                 if deadline is None
-                else _remaining_timeout(
+                else _full_remaining_timeout(
                     deadline,
-                    fallback=30.0,
                     message="timed out waiting for BASIC program completion",
                 ),
                 marker="CBATCHBEGIN",

@@ -541,6 +541,60 @@ class DosRunnerWrapperTests(unittest.TestCase):
             self.assertFalse(logs["expect"].exists())
             self.assertFalse(logs["script"].exists())
 
+    def test_gwbasic_file_run_waits_for_process_exit_before_finishing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, _ = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_GWBASIC_ARCHIVE": str(temp_path / "downloads/gwbasic/gwbasic-3.23.7z"),
+                    "CLASSIC_BASIC_GWBASIC_EXE": str(temp_path / "downloads/gwbasic/GWBASIC.EXE"),
+                    "FAKE_DOS_CAPTURE_CONTENT": "0\r\n",
+                    "FAKE_DOS_CAPTURE_APPEND_CONTENT": "1\r\n2\r\n",
+                    "FAKE_DOSEMU_SLEEP_BEFORE_APPEND": "0.6",
+                    "CLASSIC_BASIC_DOSEMU_PTY": "off",
+                }
+            )
+
+            result, _ = self._run_wrapper(
+                env=env,
+                runtime_name="gwbasic-runtime",
+                home_name="gwbasic-home",
+                runner=ROOT_DIR / "run/gwbasic.sh",
+                source_name="gwbasic.bas",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")
+            self.assertEqual(result.stdout.splitlines(), ["0", "1", "2"])
+
+    def test_gwbasic_file_run_times_out_instead_of_false_success_after_partial_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, _ = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_GWBASIC_ARCHIVE": str(temp_path / "downloads/gwbasic/gwbasic-3.23.7z"),
+                    "CLASSIC_BASIC_GWBASIC_EXE": str(temp_path / "downloads/gwbasic/GWBASIC.EXE"),
+                    "FAKE_DOS_CAPTURE_CONTENT": "0\r\n1\r\n",
+                    "FAKE_DOSEMU_SLEEP_BEFORE_EXIT": "2.0",
+                    "CLASSIC_BASIC_DOSEMU_PTY": "off",
+                }
+            )
+
+            result, _ = self._run_wrapper(
+                env=env,
+                runtime_name="gwbasic-runtime",
+                home_name="gwbasic-home",
+                runner=ROOT_DIR / "run/gwbasic.sh",
+                source_name="gwbasic.bas",
+                extra_args=["--timeout", "0.4"],
+            )
+
+            self.assertEqual(result.returncode, 124)
+            self.assertEqual(result.stdout.splitlines(), ["0", "1"])
+            self.assertIn("gwbasic did not complete within 0.4", result.stderr)
+
     def test_qbasic_file_run_collects_redirected_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
@@ -592,6 +646,60 @@ class DosRunnerWrapperTests(unittest.TestCase):
                 (runtime_dir / "drive_c" / "BOOT.BAS").read_text(encoding="ascii"),
                 '10 RUN "RUNFILE.BAS"\n',
             )
+
+    def test_qbasic_file_run_waits_for_process_exit_before_finishing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, _ = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_QBASIC_ARCHIVE": str(temp_path / "downloads/qbasic/qbasic-1.1.zip"),
+                    "CLASSIC_BASIC_QBASIC_EXE": str(temp_path / "downloads/qbasic/QBASIC.EXE"),
+                    "FAKE_DOS_CAPTURE_CONTENT": "0\r\n",
+                    "FAKE_DOS_CAPTURE_APPEND_CONTENT": "1\r\n2\r\n",
+                    "FAKE_DOSEMU_SLEEP_BEFORE_APPEND": "0.6",
+                    "CLASSIC_BASIC_DOSEMU_PTY": "off",
+                }
+            )
+
+            result, _ = self._run_wrapper(
+                env=env,
+                runtime_name="qbasic-runtime",
+                home_name="qbasic-home",
+                runner=ROOT_DIR / "run/qbasic.sh",
+                source_name="qbasic.bas",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")
+            self.assertEqual(result.stdout.splitlines(), ["0", "1", "2"])
+
+    def test_qbasic_file_run_times_out_instead_of_false_success_after_partial_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            env, _ = self._make_test_env(temp_path)
+            env.update(
+                {
+                    "CLASSIC_BASIC_QBASIC_ARCHIVE": str(temp_path / "downloads/qbasic/qbasic-1.1.zip"),
+                    "CLASSIC_BASIC_QBASIC_EXE": str(temp_path / "downloads/qbasic/QBASIC.EXE"),
+                    "FAKE_DOS_CAPTURE_CONTENT": "0\r\n1\r\n",
+                    "FAKE_DOSEMU_SLEEP_BEFORE_EXIT": "2.0",
+                    "CLASSIC_BASIC_DOSEMU_PTY": "off",
+                }
+            )
+
+            result, _ = self._run_wrapper(
+                env=env,
+                runtime_name="qbasic-runtime",
+                home_name="qbasic-home",
+                runner=ROOT_DIR / "run/qbasic.sh",
+                source_name="qbasic.bas",
+                extra_args=["--timeout", "0.4"],
+            )
+
+            self.assertEqual(result.returncode, 124)
+            self.assertEqual(result.stdout.splitlines(), ["0", "1"])
+            self.assertIn("qbasic did not complete within 0.4", result.stderr)
 
     def test_gwbasic_file_run_collects_out_txt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -869,12 +977,21 @@ class DosRunnerWrapperTests(unittest.TestCase):
               fi
               if [[ -n "${capture_name}" ]]; then
                 printf '%s' "${FAKE_DOS_CAPTURE_CONTENT}" >"${drive_c}/${capture_name}"
-              fi
+                if [[ -n "${FAKE_DOSEMU_SLEEP_BEFORE_APPEND:-}" ]]; then
+                  sleep "${FAKE_DOSEMU_SLEEP_BEFORE_APPEND}"
+                fi
+            if [[ -n "${FAKE_DOS_CAPTURE_APPEND_CONTENT:-}" ]]; then
+              printf '%s' "${FAKE_DOS_CAPTURE_APPEND_CONTENT}" >>"${drive_c}/${capture_name}"
             fi
+          fi
+        fi
             if [[ -n "${FAKE_DOS_OUT_TXT_CONTENT:-}" ]]; then
               printf '%s' "${FAKE_DOS_OUT_TXT_CONTENT}" >"${drive_c}/out.txt"
             fi
             printf '%s' "${FAKE_DOSEMU_STDOUT:-}"
+            if [[ -n "${FAKE_DOSEMU_SLEEP_BEFORE_EXIT:-}" ]]; then
+              sleep "${FAKE_DOSEMU_SLEEP_BEFORE_EXIT}"
+            fi
             exit "${FAKE_DOSEMU_EXIT_STATUS:-0}"
             """,
         )

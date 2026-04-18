@@ -192,6 +192,7 @@ class BasicRunnerTests(unittest.TestCase):
             _copy_file(ROOT_DIR / "scripts/fm7basic-common.sh", temp_path / "scripts/fm7basic-common.sh")
             _copy_file(ROOT_DIR / "src/fm7basic_cli.py", temp_path / "src/fm7basic_cli.py")
             _copy_file(ROOT_DIR / "src/fbasic_batch.py", temp_path / "src/fbasic_batch.py")
+            (temp_path / "demo.bas").write_text("10 PRINT 42\n", encoding="ascii")
 
             romset = temp_path / "downloads/fm7basic/mame-roms/fm77av"
             romset.mkdir(parents=True)
@@ -235,6 +236,7 @@ class BasicRunnerTests(unittest.TestCase):
             _copy_file(ROOT_DIR / "scripts/fm7basic-common.sh", temp_path / "scripts/fm7basic-common.sh")
             _copy_file(ROOT_DIR / "src/fm7basic_cli.py", temp_path / "src/fm7basic_cli.py")
             _copy_file(ROOT_DIR / "src/fbasic_batch.py", temp_path / "src/fbasic_batch.py")
+            (temp_path / "demo.bas").write_text("10 PRINT 42\n", encoding="ascii")
 
             romset = temp_path / "downloads/fm7basic/mame-roms/fm77av"
             romset.mkdir(parents=True)
@@ -277,6 +279,7 @@ class BasicRunnerTests(unittest.TestCase):
             _copy_file(ROOT_DIR / "scripts/fm7basic-common.sh", temp_path / "scripts/fm7basic-common.sh")
             _copy_file(ROOT_DIR / "src/fbasic_batch.py", temp_path / "src/fbasic_batch.py")
             _copy_file(ROOT_DIR / "src/fm7basic_cli.py", temp_path / "src/fm7basic_cli.py")
+            (temp_path / "demo.bas").write_text("10 PRINT 42\n", encoding="ascii")
 
             romset = temp_path / "downloads/fm7basic/mame-roms/fm77av"
             romset.mkdir(parents=True)
@@ -323,6 +326,7 @@ class BasicRunnerTests(unittest.TestCase):
             _copy_file(ROOT_DIR / "scripts/fm7basic-common.sh", temp_path / "scripts/fm7basic-common.sh")
             _copy_file(ROOT_DIR / "src/fbasic_batch.py", temp_path / "src/fbasic_batch.py")
             _copy_file(ROOT_DIR / "src/fm7basic_cli.py", temp_path / "src/fm7basic_cli.py")
+            (temp_path / "demo.bas").write_text("10 PRINT 42\n", encoding="ascii")
 
             romset = temp_path / "downloads/fm7basic/mame-roms/fm77av"
             romset.mkdir(parents=True)
@@ -358,3 +362,49 @@ class BasicRunnerTests(unittest.TestCase):
             self.assertIn("--run", logged)
             self.assertIn("--timeout 17.5", logged)
             self.assertIn("-window", logged)
+
+    def test_run_fm7basic_resolves_program_from_adjacent_tree_by_basename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox_root = Path(tmp)
+            repo_root = sandbox_root / "classic-basic"
+            repo_root.mkdir()
+            _copy_file(ROOT_DIR / "run/fm7basic.sh", repo_root / "run/fm7basic.sh")
+            _copy_file(ROOT_DIR / "scripts/fm7basic-common.sh", repo_root / "scripts/fm7basic-common.sh")
+            _copy_file(ROOT_DIR / "src/fbasic_batch.py", repo_root / "src/fbasic_batch.py")
+            _copy_file(ROOT_DIR / "src/fm7basic_cli.py", repo_root / "src/fm7basic_cli.py")
+
+            romset = repo_root / "downloads/fm7basic/mame-roms/fm77av"
+            romset.mkdir(parents=True)
+            for name in ("initiate.rom", "fbasic30.rom", "subsys_a.rom", "subsys_b.rom", "subsys_c.rom", "subsyscg.rom", "kanji.rom"):
+                (romset / name).write_bytes(b"rom")
+
+            sibling_program = sandbox_root / "pi-repr/kimura/fig3.1.bas"
+            sibling_program.parent.mkdir(parents=True)
+            sibling_program.write_text("10 PRINT 42\n", encoding="ascii")
+
+            bin_dir = repo_root / "bin"
+            python_log = repo_root / "python.log"
+            _write_executable(
+                bin_dir / "python3",
+                f"""#!/usr/bin/env bash
+                set -euo pipefail
+                printf '%s\\n' "$*" >"{python_log}"
+                """,
+            )
+            _write_executable(bin_dir / "mame", "#!/usr/bin/env bash\nexit 0\n")
+
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            result = subprocess.run(
+                ["bash", "run/fm7basic.sh", "-r", "-f", "fig3.1.bas"],
+                cwd=repo_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            logged = python_log.read_text(encoding="ascii")
+            self.assertIn(f"--file {sibling_program}", logged)
+            self.assertIn("--run", logged)

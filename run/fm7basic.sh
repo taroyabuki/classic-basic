@@ -73,6 +73,11 @@ fi
 if [[ -n "${timeout_spec}" && "${run_program}" != "1" ]]; then
   die "--timeout requires --run --file PROGRAM.bas"
 fi
+if [[ -n "${file_path}" ]]; then
+  resolved_file_path="$(resolve_fm7basic_program_path "${file_path}" || true)"
+  [[ -n "${resolved_file_path}" ]] || die "program not found: ${file_path}"
+  file_path="${resolved_file_path}"
+fi
 
 ensure_fm7basic_romset "${driver}"
 if [[ "${driver}" == "fm7" ]]; then

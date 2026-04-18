@@ -140,6 +140,8 @@ def _looks_like_source_listing(text: str) -> bool:
     body = (match.group(2) or "").upper()
     if not body:
         return False
+    if not any(char.isalpha() for char in body):
+        return False
     if any(keyword in body for keyword in _SOURCE_LISTING_KEYWORDS):
         return True
     return any(token in body for token in ("=", "+", "-", "*", "/", "(", ")", ":", "<", ">"))
@@ -201,9 +203,18 @@ def _build_ignored_source_lines(loaded_lines: list[str]) -> set[str]:
         for variant in variants:
             for start in range(1, len(variant)):
                 fragment = variant[start:].strip()
-                if _looks_like_source_fragment(fragment):
+                if _looks_like_source_fragment(fragment) or _looks_like_short_source_suffix(fragment):
                     ignored.add(fragment)
     return ignored
+
+
+def _looks_like_short_source_suffix(text: str) -> bool:
+    stripped = text.strip()
+    if len(stripped) < 8:
+        return False
+    if not any(token in stripped for token in ('"', ";", "(", ")", "$", "#", "%", "!", ":", "=", "+", "-", "*", "/")):
+        return False
+    return any(char.isdigit() or char.isalpha() for char in stripped)
 
 
 class ScreenTracker:
@@ -266,13 +277,6 @@ class BatchOutputTracker:
         self._ignored_lines = ignored_lines or set()
 
     def observe(self, lines: list[str], cursor_row: int) -> None:
-        if self._previous_lines is not None:
-            if cursor_row != self._previous_cursor_row:
-                start = min(self._previous_cursor_row, len(lines))
-                stop = min(cursor_row, len(lines))
-                for row in range(start, stop):
-                    self._append(lines[row])
-
         self._previous_lines = list(lines)
         self._previous_cursor_row = cursor_row
 
@@ -577,6 +581,7 @@ def run_batch(bridge: OpenMSXBridge, program: Path) -> int:
     _wait_for_stable_ok_prompt(bridge, timeout=4.0)
     _configure_batch_speed(bridge)
     loaded_lines = _load_program_lines(bridge, program)
+    ignored_lines = _build_ignored_source_lines(loaded_lines)
     emitted_count = [0]
 
     initial_lines, initial_cursor_row = _get_screen_state(bridge, timeout=1.0)
@@ -584,12 +589,13 @@ def run_batch(bridge: OpenMSXBridge, program: Path) -> int:
         bridge,
         initial_lines=initial_lines,
         initial_cursor_row=initial_cursor_row,
-        ignored_lines=_build_ignored_source_lines(loaded_lines),
-        emit_lines=lambda lines: _emit_filtered_batch_lines(lines, loaded_lines, emitted_count),
+        ignored_lines=ignored_lines,
+        emit_lines=lambda lines: _emit_filtered_batch_lines(lines, loaded_lines, emitted_count, ignored_lines),
     )
     _print_batch_result(
-        _filter_batch_result_lines(output_lines, loaded_lines)[emitted_count[0] :],
+        _filter_batch_result_lines(output_lines, loaded_lines, ignored_lines)[emitted_count[0] :],
         loaded_lines,
+        ignored_lines,
     )
     return 0
 
@@ -606,18 +612,20 @@ def run_loaded_batch(bridge: OpenMSXBridge, program: Path) -> int:
         for line in source_text.splitlines()
         if line.rstrip("\r")
     ]
+    ignored_lines = _build_ignored_source_lines(loaded_lines)
     emitted_count = [0]
     initial_lines, initial_cursor_row = _get_screen_state(bridge, timeout=1.0)
     output_lines = _run_loaded_program(
         bridge,
         initial_lines=initial_lines,
         initial_cursor_row=initial_cursor_row,
-        ignored_lines=_build_ignored_source_lines(loaded_lines),
-        emit_lines=lambda lines: _emit_filtered_batch_lines(lines, loaded_lines, emitted_count),
+        ignored_lines=ignored_lines,
+        emit_lines=lambda lines: _emit_filtered_batch_lines(lines, loaded_lines, emitted_count, ignored_lines),
     )
     _print_batch_result(
-        _filter_batch_result_lines(output_lines, loaded_lines)[emitted_count[0] :],
+        _filter_batch_result_lines(output_lines, loaded_lines, ignored_lines)[emitted_count[0] :],
         loaded_lines,
+        ignored_lines,
     )
     return 0
 
@@ -838,7 +846,7 @@ def _drain_until_prompt(
         if saw_prompt_departure:
             previous_count = len(tracker._lines)
             tracker.observe(lines, cursor_row)
-            tracker.capture_window(lines, 0, len(lines))
+            tracker.capture_window(lines, 0, cursor_row)
             if emit_lines is not None and len(tracker._lines) > previous_count:
                 emit_lines(tracker._lines[previous_count:])
             if _post_run_prompt_visible(lines, cursor_row):
@@ -856,8 +864,12 @@ def _drain_until_prompt(
     return tracker.finish(last_lines, last_cursor_row)
 
 
-def _print_batch_result(lines: list[str], loaded_lines: list[str]) -> None:
-    for line in _filter_batch_result_lines(lines, loaded_lines):
+def _print_batch_result(
+    lines: list[str],
+    loaded_lines: list[str],
+    ignored_lines: set[str] | None = None,
+) -> None:
+    for line in _filter_batch_result_lines(lines, loaded_lines, ignored_lines):
         print(line)
 
 
@@ -865,21 +877,44 @@ def _emit_filtered_batch_lines(
     lines: list[str],
     loaded_lines: list[str],
     emitted_count: list[int],
+    ignored_lines: set[str] | None = None,
 ) -> None:
-    filtered_lines = _filter_batch_result_lines(lines, loaded_lines)
-    for line in filtered_lines[emitted_count[0] :]:
+    filtered_lines = _filter_batch_result_lines(lines, loaded_lines, ignored_lines)
+    for line in filtered_lines:
         print(line)
-    emitted_count[0] = len(filtered_lines)
+    emitted_count[0] += len(filtered_lines)
 
 
-def _filter_batch_result_lines(lines: list[str], loaded_lines: list[str]) -> list[str]:
+def _filter_batch_result_lines(
+    lines: list[str],
+    loaded_lines: list[str],
+    ignored_lines: set[str] | None = None,
+) -> list[str]:
     source_lines = {line.strip() for line in loaded_lines}
+    ignored = ignored_lines if ignored_lines is not None else _build_ignored_source_lines(loaded_lines)
     filtered: list[str] = []
     for line in lines:
         stripped = line.strip()
         if stripped in source_lines:
             continue
+        if stripped in ignored:
+            continue
         if _looks_like_loaded_source_fragment(stripped, loaded_lines):
             continue
         filtered.append(line)
-    return filtered
+    return _merge_wrapped_batch_result_lines(filtered)
+
+
+def _merge_wrapped_batch_result_lines(lines: list[str]) -> list[str]:
+    merged: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if (
+            merged
+            and re.fullmatch(r"\d+\s*/\s*\d+", merged[-1].strip()) is not None
+            and re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[ED][+-]?\d+)?", stripped, re.IGNORECASE) is not None
+        ):
+            merged[-1] = f"{merged[-1].rstrip()} {stripped}"
+            continue
+        merged.append(line)
+    return merged

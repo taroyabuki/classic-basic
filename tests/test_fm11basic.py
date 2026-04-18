@@ -168,6 +168,24 @@ class FM11BasicRuntimeTests(unittest.TestCase):
             any(call.args and call.args[0] == fm11basic.FAST_STARTUP_ANSWER_DELAY for call in sleep_with_deadline.call_args_list)
         )
 
+    def test_handle_startup_prompts_uses_full_remaining_deadline_for_wait(self) -> None:
+        session = mock.Mock()
+        session.copy_screen.side_effect = [
+            "booting",
+            "Ready",
+        ]
+        session.wait_for_text.return_value = "How many 1MB disk drives"
+
+        with (
+            mock.patch("fm11basic._try_fast_startup_ready", return_value=None),
+            mock.patch("fm11basic._sleep_with_deadline", return_value=None),
+            mock.patch("fm11basic.time.monotonic", return_value=100.0),
+        ):
+            screen = fm11basic.handle_startup_prompts(session, deadline=145.0)
+
+        self.assertEqual(screen, "Ready")
+        self.assertEqual(session.wait_for_text.call_args.kwargs["timeout"], 45.0)
+
     def test_load_source_batched_groups_waits_by_three_lines(self) -> None:
         session = mock.Mock()
         source_lines = [f"{index * 10} PRINT {index}" for index in range(1, 8)]
@@ -324,6 +342,7 @@ class FM11BasicRuntimeTests(unittest.TestCase):
 
         self.assertIs(session.xvfb_proc, fake_proc)
         self.assertEqual(popen.call_args.kwargs["preexec_fn"], sentinel)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
     def test_runtime_session_close_shuts_down_wineserver_for_prefix(self) -> None:
         session = fm11basic.RuntimeSession()
@@ -346,6 +365,31 @@ class FM11BasicRuntimeTests(unittest.TestCase):
             check=False,
             timeout_seconds=5.0,
             timeout_error="timed out shutting down FM-11 wine services",
+        )
+
+    def test_runtime_session_close_terminates_live_process_groups(self) -> None:
+        session = fm11basic.RuntimeSession()
+        session.display = ":99"
+        session.wine_proc = mock.Mock()
+        session.wine_proc.pid = 111
+        session.wine_proc.poll.return_value = None
+        session.xvfb_proc = mock.Mock()
+        session.xvfb_proc.pid = 222
+        session.xvfb_proc.poll.return_value = None
+
+        with (
+            mock.patch("fm11basic.os.killpg") as killpg,
+            mock.patch("fm11basic.run_command", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")),
+            mock.patch("fm11basic.shutil.rmtree"),
+        ):
+            session.close()
+
+        self.assertEqual(
+            killpg.call_args_list,
+            [
+                mock.call(111, fm11basic.signal.SIGTERM),
+                mock.call(222, fm11basic.signal.SIGTERM),
+            ],
         )
 
     def test_run_basic_retries_with_conservative_loader_after_fast_loader_failure(self) -> None:
@@ -757,6 +801,25 @@ class FM11BasicRuntimeTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIsNone(collect_run_output.call_args.kwargs["timeout"])
         self.assertIs(collect_run_output.call_args.kwargs["on_lines"], fm11basic.emit_lines)
+
+    def test_run_basic_with_timeout_uses_full_remaining_budget_for_batch_collection(self) -> None:
+        session = mock.Mock()
+        args = SimpleNamespace(file="demo.bas", run=True, timeout="300")
+
+        with (
+            mock.patch("fm11basic.require_tool"),
+            mock.patch("fm11basic.bootstrap_assets"),
+            mock.patch("fm11basic.RuntimeSession", return_value=session),
+            mock.patch("fm11basic.read_basic_file", return_value='10 PRINT "HELLO"\n'),
+            mock.patch("fm11basic.handle_startup_prompts", return_value="Ready"),
+            mock.patch("fm11basic.wait_for_ready", side_effect=["Ready", "Ready"]),
+            mock.patch("fm11basic.time.monotonic", return_value=100.0),
+            mock.patch("fm11basic.collect_run_output", return_value=(["Ready"], ["HELLO"])) as collect_run_output,
+        ):
+            result = fm11basic.run_basic(args)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(collect_run_output.call_args.kwargs["timeout"], 300.0)
 
     def test_collect_command_output_streams_lines_before_ready(self) -> None:
         session = mock.Mock()

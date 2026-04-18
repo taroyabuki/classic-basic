@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import signal
 import subprocess
 import tempfile
 import threading
@@ -18,6 +19,7 @@ from fbasic_batch import (
     _emit_console_diff,
     _read_text_capture_lines,
     _run_mame_headful_capture,
+    _terminate_launched_process,
     _build_fm7_interactive_lua,
     extract_output_lines,
     is_input_prompt_line,
@@ -238,6 +240,18 @@ class FBasicBatchTests(unittest.TestCase):
         else:
             self.assertIsNone(popen.call_args.kwargs["preexec_fn"])
 
+    def test_terminate_launched_process_uses_process_group_when_available(self) -> None:
+        proc = mock.Mock()
+        proc.pid = 4321
+        proc.poll.return_value = None
+
+        with mock.patch("fbasic_batch.os.killpg") as killpg:
+            _terminate_launched_process(proc)
+
+        killpg.assert_called_once_with(4321, signal.SIGTERM)
+        proc.terminate.assert_not_called()
+        proc.wait.assert_called_once_with(timeout=5.0)
+
     def test_fm7_batch_progress_requires_ready_after_run_in_same_snapshot(self) -> None:
         progress = _FM7BatchProgress()
 
@@ -249,6 +263,11 @@ class FBasicBatchTests(unittest.TestCase):
         lines = [" 229", " 230", " 231"]
 
         self.assertEqual(extract_output_lines(lines, lines), lines)
+
+    def test_extract_output_lines_keeps_fractional_numeric_output_after_run(self) -> None:
+        lines = ["RUN", " 3 / 1         3", " 13 / 4        3.25"]
+
+        self.assertEqual(extract_output_lines(lines, lines), [" 3 / 1         3", " 13 / 4        3.25"])
 
     def test_run_batch_reads_fm77av_output_from_headless_interactive_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -378,6 +397,217 @@ class FBasicBatchTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             print_mock.assert_called_once_with("FOUND 16", flush=True)
+
+    def test_run_batch_streams_fm77av_output_until_timeout_without_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            program_path = temp_path / "program.bas"
+            program_path.write_text('10 PRINT "FOUND 16"\n20 GOTO 10\n', encoding="ascii")
+
+            class FakeProc:
+                def __init__(self) -> None:
+                    self.returncode: int | None = None
+
+                def poll(self) -> int | None:
+                    return self.returncode
+
+                def terminate(self) -> None:
+                    self.returncode = 0
+
+                def wait(self, timeout: float | None = None) -> int:
+                    self.returncode = 0
+                    return 0
+
+                def kill(self) -> None:
+                    self.returncode = -9
+
+            def fake_launch_mame(**kwargs: object) -> FakeProc:
+                lua_path = Path(kwargs["lua_path"])
+                input_path = lua_path.with_name("input.txt")
+                output_path = lua_path.with_name("screen.txt")
+                proc = FakeProc()
+
+                def writer() -> None:
+                    output_path.write_text("Ready\n", encoding="ascii")
+                    while True:
+                        current = input_path.read_text(encoding="ascii")
+                        if 'PRINT "CBATCHBEGIN"\nRUN\n' not in current:
+                            time.sleep(0.01)
+                            continue
+                        output_path.write_text(
+                            'PRINT "CBATCHBEGIN"\nCBATCHBEGIN\nReady\nRUN\nFOUND 16\n',
+                            encoding="ascii",
+                        )
+                        return
+
+                thread = threading.Thread(target=writer, daemon=True)
+                thread.start()
+                proc.thread = thread
+                return proc
+
+            with (
+                mock.patch("fbasic_batch.launch_mame", side_effect=fake_launch_mame),
+                mock.patch("builtins.print") as print_mock,
+            ):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    run_batch(
+                        mame_command="mame",
+                        rompath=temp_path,
+                        driver="fm77av",
+                        disk_path=None,
+                        program_path=program_path,
+                        timeout_seconds=0.2,
+                        extra_mame_args=[],
+                    )
+
+            print_mock.assert_called_once_with("FOUND 16", flush=True)
+
+    def test_run_batch_waits_for_ready_across_long_fm77av_output_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            program_path = temp_path / "program.bas"
+            program_path.write_text('10 PRINT "FOUND 16"\n20 END\n', encoding="ascii")
+
+            class FakeProc:
+                def __init__(self) -> None:
+                    self.returncode: int | None = None
+
+                def poll(self) -> int | None:
+                    return self.returncode
+
+                def terminate(self) -> None:
+                    self.returncode = 0
+
+                def wait(self, timeout: float | None = None) -> int:
+                    self.returncode = 0
+                    return 0
+
+                def kill(self) -> None:
+                    self.returncode = -9
+
+            def fake_launch_mame(**kwargs: object) -> FakeProc:
+                lua_path = Path(kwargs["lua_path"])
+                input_path = lua_path.with_name("input.txt")
+                output_path = lua_path.with_name("screen.txt")
+                proc = FakeProc()
+
+                def writer() -> None:
+                    output_path.write_text("Ready\n", encoding="ascii")
+                    while True:
+                        current = input_path.read_text(encoding="ascii")
+                        if 'PRINT "CBATCHBEGIN"\nRUN\n' not in current:
+                            time.sleep(0.01)
+                            continue
+                        output_path.write_text(
+                            'PRINT "CBATCHBEGIN"\nCBATCHBEGIN\nReady\nRUN\n355 / 113     3.141592920353982\n',
+                            encoding="ascii",
+                        )
+                        time.sleep(2.2)
+                        output_path.write_text(
+                            "PRINT \"CBATCHBEGIN\"\nCBATCHBEGIN\nReady\nRUN\n"
+                            "355 / 113     3.141592920353982\n"
+                            "52163 / 16604 3.141592387376536\n"
+                            "Ready\n",
+                            encoding="ascii",
+                        )
+                        return
+
+                thread = threading.Thread(target=writer, daemon=True)
+                thread.start()
+                proc.thread = thread
+                return proc
+
+            with (
+                mock.patch("fbasic_batch.launch_mame", side_effect=fake_launch_mame),
+                mock.patch("builtins.print") as print_mock,
+            ):
+                exit_code = run_batch(
+                    mame_command="mame",
+                    rompath=temp_path,
+                    driver="fm77av",
+                    disk_path=None,
+                    program_path=program_path,
+                    timeout_seconds=5.0,
+                    extra_mame_args=[],
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                print_mock.mock_calls,
+                [
+                    mock.call("355 / 113     3.141592920353982", flush=True),
+                    mock.call("52163 / 16604 3.141592387376536", flush=True),
+                ],
+            )
+
+    def test_run_batch_ignores_transient_fm77av_redraw_fragments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            program_path = temp_path / "program.bas"
+            program_path.write_text('10 PRINT "X"\n20 END\n', encoding="ascii")
+
+            class FakeProc:
+                def __init__(self) -> None:
+                    self.returncode: int | None = None
+
+                def poll(self) -> int | None:
+                    return self.returncode
+
+                def terminate(self) -> None:
+                    self.returncode = 0
+
+                def wait(self, timeout: float | None = None) -> int:
+                    self.returncode = 0
+                    return 0
+
+                def kill(self) -> None:
+                    self.returncode = -9
+
+            def fake_launch_mame(**kwargs: object) -> FakeProc:
+                lua_path = Path(kwargs["lua_path"])
+                input_path = lua_path.with_name("input.txt")
+                output_path = lua_path.with_name("screen.txt")
+                proc = FakeProc()
+
+                def writer() -> None:
+                    output_path.write_text("Ready\n", encoding="ascii")
+                    while True:
+                        current = input_path.read_text(encoding="ascii")
+                        if 'PRINT "CBATCHBEGIN"\nRUN\n' not in current:
+                            time.sleep(0.01)
+                            continue
+                        output_path.write_text(
+                            '2\n230\n23\n24\n240  NEX\n250 RE\nPRI\nPRINT "CB\nPRINT "CBATCHB\n',
+                            encoding="ascii",
+                        )
+                        time.sleep(0.2)
+                        output_path.write_text(
+                            'PRINT "CBATCHBEGIN"\nCBATCHBEGIN\nReady\nRUN\nX\nReady\n',
+                            encoding="ascii",
+                        )
+                        return
+
+                thread = threading.Thread(target=writer, daemon=True)
+                thread.start()
+                proc.thread = thread
+                return proc
+
+            with (
+                mock.patch("fbasic_batch.launch_mame", side_effect=fake_launch_mame),
+                mock.patch("builtins.print") as print_mock,
+            ):
+                exit_code = run_batch(
+                    mame_command="mame",
+                    rompath=temp_path,
+                    driver="fm77av",
+                    disk_path=None,
+                    program_path=program_path,
+                    timeout_seconds=5.0,
+                    extra_mame_args=[],
+                )
+
+            self.assertEqual(exit_code, 0)
+            print_mock.assert_called_once_with("X", flush=True)
 
     def test_build_fm7_interactive_lua_posts_single_enter_per_line(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,16 +1,36 @@
 from __future__ import annotations
 
 import os
+import pty
+import select
+import signal
 import stat
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 RUNNER = ROOT_DIR / "run/6502.sh"
+
+
+def _read_until(master_fd: int, needle: bytes, *, timeout: float) -> bytes:
+    end = time.time() + timeout
+    output = bytearray()
+    while time.time() < end:
+        ready, _, _ = select.select([master_fd], [], [], 0.1)
+        if not ready:
+            continue
+        chunk = os.read(master_fd, 4096)
+        if not chunk:
+            break
+        output.extend(chunk)
+        if needle in output:
+            return bytes(output)
+    raise AssertionError(f"timed out waiting for {needle!r}; got tail {bytes(output[-200:])!r}")
 
 
 def _write_executable(path: Path, content: str) -> None:
@@ -210,6 +230,39 @@ class Basic6502RunnerTests(unittest.TestCase):
                     f"{program}"
                 ),
             )
+
+    def test_interactive_ctrl_c_breaks_running_program_and_ctrl_d_exits(self) -> None:
+        master_fd, slave_fd = pty.openpty()
+        proc = subprocess.Popen(
+            ["bash", str(RUNNER)],
+            cwd=ROOT_DIR,
+            env=os.environ.copy(),
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            start_new_session=True,
+        )
+        os.close(slave_fd)
+
+        try:
+            _read_until(master_fd, b"OK", timeout=30)
+            os.write(master_fd, b"10 GOTO 10\rRUN\r")
+            _read_until(master_fd, b"RUN", timeout=10)
+            time.sleep(0.1)
+            os.write(master_fd, b"\x03")
+            output = _read_until(master_fd, b"BREAK", timeout=10)
+            output += _read_until(master_fd, b"OK", timeout=10)
+            os.write(master_fd, b"\x04")
+            proc.wait(timeout=10)
+        finally:
+            os.close(master_fd)
+            if proc.poll() is None:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                proc.wait(timeout=10)
+
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn(b"BREAK", output)
+        self.assertIn(b"OK", output)
 
 
 if __name__ == "__main__":

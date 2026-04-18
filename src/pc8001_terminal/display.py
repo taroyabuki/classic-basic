@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclass_compat import dataclass
 
 
 @dataclass(frozen=True, slots=True)

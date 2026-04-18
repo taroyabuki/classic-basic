@@ -11,6 +11,9 @@ from msx_basic.cli import main
 from msx_basic.loop import (
     _BLINK_BLOCK_CURSOR,
     _INTERACTIVE_INPUT_TIMEOUT,
+    _build_ignored_source_lines,
+    _emit_filtered_batch_lines,
+    _filter_batch_result_lines,
     _normalize_interactive_completed_line,
     _normalize_interactive_cursor_row,
     _post_run_prompt_visible,
@@ -24,6 +27,7 @@ from msx_basic.loop import (
     _print_batch_result,
     _type_program_line,
     _wait_for_line_entry,
+    BatchOutputTracker,
     ScreenTracker,
     run_load,
     run_loaded_batch,
@@ -279,6 +283,7 @@ class MsxBasicLoopTests(unittest.TestCase):
     def test_numeric_program_output_is_not_treated_as_source_listing(self) -> None:
         self.assertFalse(_looks_like_source_listing("4131415926535898"))
         self.assertFalse(_looks_like_source_listing("0"))
+        self.assertFalse(_looks_like_source_listing("223 / 71      3.1408450704225"))
 
     def test_type_program_line_chunks_long_input(self) -> None:
         bridge = FakeBridge([_screen(0, (0, "Ok"))] * 8)
@@ -465,7 +470,9 @@ class MsxBasicLoopTests(unittest.TestCase):
         run_load_mock.assert_called_once_with(bridge, program_path)
         speed_mock.assert_called_once_with(bridge)
         run_mock.assert_called_once()
-        print_mock.assert_called_once_with(["HELLO"], ['10 PRINT "HELLO"', "20 END"])
+        print_mock.assert_called_once()
+        self.assertEqual(print_mock.call_args.args[0], ["HELLO"])
+        self.assertEqual(print_mock.call_args.args[1], ['10 PRINT "HELLO"', "20 END"])
 
     def test_print_batch_result_writes_stdout_lines(self) -> None:
         stdout = io.StringIO()
@@ -486,6 +493,102 @@ class MsxBasicLoopTests(unittest.TestCase):
                 loaded_lines,
             )
         self.assertEqual(stdout.getvalue(), "9858532659413141\n6.76E-15\n")
+
+    def test_filter_batch_result_lines_skips_short_loaded_source_suffixes(self) -> None:
+        loaded_lines = [
+            "100 REM ***** PAI 1986.9.1",
+            "110  DEFDBL X,Y,Z",
+            "120  K=12",
+            "130  X=.2#",
+            "140  GOSUB 190",
+            "150  Z=Y",
+            "160  X=1/239#",
+            "170  GOSUB 190",
+            "180  PRINT 16*Z-4*Y",
+            '181  DEFDBL A:A=16*Z-4*Y:P=VARPTR(A)',
+            "182  FOR I=0 TO 7",
+            '183    PRINT RIGHT$("0"+HEX$(PEEK(P+I)),2);" ";',
+            "184  NEXT",
+            "185  END",
+        ]
+
+        self.assertEqual(
+            _filter_batch_result_lines(
+                [')),2);" ";', "41 31 41 59 26 53 58 98"],
+                loaded_lines,
+            ),
+            ["41 31 41 59 26 53 58 98"],
+        )
+
+    def test_filter_batch_result_lines_merges_wrapped_fraction_output(self) -> None:
+        self.assertEqual(
+            _filter_batch_result_lines(
+                ["52163 / 16604", "3.1415923873765"],
+                ['180  PRINT M;"/";N,M/N'],
+            ),
+            ["52163 / 16604 3.1415923873765"],
+        )
+
+    def test_emit_and_final_batch_filters_share_same_ignored_source_lines(self) -> None:
+        stdout = io.StringIO()
+        loaded_lines = [
+            "100 REM ***** PAI 1986.9.1",
+            '183    PRINT RIGHT$("0"+HEX$(PEEK(P+I)),2);" ";',
+            "184  NEXT",
+        ]
+        ignored_lines = _build_ignored_source_lines(loaded_lines)
+        emitted_count = [0]
+        observed_lines = [')),2);" ";', "41 31 41 59 26 53 58 98"]
+
+        with patch("sys.stdout", stdout):
+            _emit_filtered_batch_lines(observed_lines, loaded_lines, emitted_count, ignored_lines)
+            _print_batch_result(
+                _filter_batch_result_lines(observed_lines, loaded_lines, ignored_lines)[emitted_count[0] :],
+                loaded_lines,
+                ignored_lines,
+            )
+
+        self.assertEqual(stdout.getvalue(), "41 31 41 59 26 53 58 98\n")
+
+    def test_emit_filtered_batch_lines_counts_incremental_emissions(self) -> None:
+        stdout = io.StringIO()
+        emitted_count = [0]
+
+        with patch("sys.stdout", stdout):
+            _emit_filtered_batch_lines(["FIRST"], [], emitted_count)
+            _emit_filtered_batch_lines(["SECOND"], [], emitted_count)
+            _print_batch_result(["FIRST", "SECOND"][emitted_count[0] :], [])
+
+        self.assertEqual(stdout.getvalue(), "FIRST\nSECOND\n")
+        self.assertEqual(emitted_count[0], 2)
+
+    def test_batch_output_tracker_merges_scrolling_windows_without_replaying_history(self) -> None:
+        tracker = BatchOutputTracker()
+
+        windows = [
+            ["1", "2", "3"],
+            ["1", "2", "3", "4"],
+            ["2", "3", "4", "5"],
+            ["3", "4", "5", "6"],
+        ]
+
+        for window in windows:
+            tracker.observe(window, len(window))
+            tracker.capture_window(window, 0, len(window))
+
+        self.assertEqual(tracker.finish(windows[-1], len(windows[-1])), ["1", "2", "3", "4", "5", "6"])
+
+    def test_batch_output_tracker_skips_active_partial_cursor_row(self) -> None:
+        tracker = BatchOutputTracker()
+
+        tracker.observe(["1", "2"], 2)
+        tracker.capture_window(["1", "2"], 0, 2)
+        tracker.observe(["1", "2", "3.14159264"], 2)
+        tracker.capture_window(["1", "2", "3.14159264"], 0, 2)
+        tracker.observe(["2", "3", "4"], 3)
+        tracker.capture_window(["2", "3", "4"], 0, 3)
+
+        self.assertEqual(tracker.finish(["2", "3", "4"], 3), ["1", "2", "3", "4"])
 
     def test_run_loop_exits_on_ctrl_d_without_forwarding_input(self) -> None:
         bridge = FakeBridge([_screen(0, (0, "Ok"))])
@@ -629,6 +732,18 @@ class MsxBasicBridgeTests(unittest.TestCase):
         self.assertEqual(cursor_row, 5)
         self.assertEqual(lines[0], "Ok")
         self.assertEqual(lines[4], "PRINT ")
+
+    def test_send_raw_escapes_xml_metacharacters(self) -> None:
+        bridge = OpenMSXBridge()
+        stdin = io.BytesIO()
+        bridge._proc = type("Proc", (), {"stdin": stdin})()
+
+        bridge._send_raw('type_via_keybuf "IF A<B & C>D"')
+
+        self.assertEqual(
+            stdin.getvalue(),
+            b'<command>type_via_keybuf "IF A&lt;B &amp; C&gt;D"</command>\n',
+        )
 
 
 class MsxBasicCliTests(unittest.TestCase):

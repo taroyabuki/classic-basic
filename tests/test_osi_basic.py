@@ -198,6 +198,77 @@ class OsiBasicTests(unittest.TestCase):
         written_bytes = bytes(written)
         self.assertIn(b"\x08 \x08", written_bytes)
 
+    def test_interactive_ctrl_d_exits_terminal_session(self) -> None:
+        boot = build_staged_input(program_path=None, exec_text=None)
+
+        class FakeTerminal:
+            def __init__(self) -> None:
+                self._reads = [0x04]
+
+            def input_ready(self) -> bool:
+                return bool(self._reads)
+
+            def read_byte(self) -> int:
+                return self._reads.pop(0)
+
+            def write_byte(self, value: int) -> None:
+                del value
+
+        console = SessionConsole(staged_input=boot, terminal=FakeTerminal())
+
+        result = OsiBasicMachine().run(console=console, max_steps=300_000)
+
+        self.assertEqual(result.reason, "eof")
+
+    def test_session_console_control_c_poll_prefetches_without_consuming_ctrl_d(self) -> None:
+        class FakeTerminal:
+            def __init__(self) -> None:
+                self._reads = [0x03, 0x04]
+
+            def input_ready(self) -> bool:
+                return bool(self._reads)
+
+            def read_byte(self) -> int:
+                return self._reads.pop(0)
+
+            def write_byte(self, value: int) -> None:
+                del value
+
+        console = SessionConsole(terminal=FakeTerminal())
+
+        self.assertTrue(console.control_c_ready())
+        self.assertEqual(console.read_byte(), 0x03)
+        self.assertEqual(console.read_byte(), 0x04)
+
+    def test_interactive_ctrl_c_breaks_running_program_then_ctrl_d_exits(self) -> None:
+        boot = build_staged_input(program_path=None, exec_text=None)
+        written: list[int] = []
+
+        class FakeTerminal:
+            def __init__(self) -> None:
+                self._reads = [0x03, 0x04]
+
+            def input_ready(self) -> bool:
+                return bool(self._reads)
+
+            def read_byte(self) -> int:
+                return self._reads.pop(0)
+
+            def write_byte(self, value: int) -> None:
+                written.append(value)
+
+        console = SessionConsole(
+            staged_input=boot + b"10 GOTO 10\rRUN\r",
+            terminal=FakeTerminal(),
+        )
+
+        result = OsiBasicMachine().run(console=console, max_steps=2_000_000)
+
+        output = bytes(written)
+        self.assertEqual(result.reason, "eof")
+        self.assertIn(b"BREAK", output)
+        self.assertIn(b"OK", output)
+
     def test_load_basic_program_accepts_lf_crlf_and_cr_line_endings(self) -> None:
         cases = {
             "lf.bas": b"10 PRINT 1\n20 END\n",

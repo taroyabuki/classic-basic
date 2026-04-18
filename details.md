@@ -64,6 +64,7 @@ GW-BASIC / QBasic の対話テストでは、**起動方法そのもの** が結
 
 - `third_party/msbasic/README.md` は、この tree が既知の 6502 Microsoft BASIC を生成し、元ファイルと byte-by-byte 比較すると説明しています。したがって `osi.bin` は独自互換実装ではなく、元 ROM と一致することを目標にした vendored binary / rebuilt artifact と扱えます。
 - `src/z80_basic/osi_basic.py` で hook している monitor call は `OSI_MONCOUT`, `OSI_MONRDKEY`, `OSI_MONISCNTC`, `OSI_LOAD`, `OSI_SAVE` だけです。`LOAD` と `SAVE` は未実装ですが、算術そのものは ROM 内部で走ります。
+- `run/6502.sh` の対話モードでは `Ctrl-C` で実行中の BASIC プログラムを `BREAK` させ、`Ctrl-D` で対話モードを終了します。
 - ローカル確認:
   - `./run/6502.sh --exec 'PRINT 2+2'` -> `4`
   - 専用の数値 check probe で `130 73 15 219` と 2 本の差分 `0` を確認
@@ -113,6 +114,7 @@ GW-BASIC / QBasic の対話テストでは、**起動方法そのもの** が結
 - `./run/nbasic.sh --file PROGRAM.bas` はプログラムを読み込んで対話モードに入ります。
 - `./run/nbasic.sh --run --file PROGRAM.bas` は PC-8001 ROM batch route でプログラムを実行します。
 - `./run/nbasic.sh [pc8001-terminal-options]` はオプションをそのまま `pc8001_terminal` に渡します。
+- Python 実行系は `CLASSIC_BASIC_PYTHON` があればそれを使い，未設定なら `pypy3`，最後に `python3` を使います。
 
 現在の ROM scaffold で `downloads/pc8001/N80_11.rom` を起動すると、次の再現が取れます。
 
@@ -132,7 +134,7 @@ Ok
 Ok
 ```
 
-`./run/nbasic.sh --run --file PROGRAM.bas` でファイルを実行すると、バナーと `Ok` プロンプトは自動的に除去されます。また、`PRINT` で数値を表示した場合は非負数の前後にスペースが付きます（例: ` 3.14 `）。長時間の batch run では途中出力も逐次 flush するので、進捗付き probe の標準出力をそのまま監視できます。
+`./run/nbasic.sh --run --file PROGRAM.bas` でファイルを実行すると、バナーと `Ok` プロンプトは自動的に除去されます。また、`PRINT` で数値を表示した場合は非負数の前後にスペースが付きます（例: ` 3.14 `）。長時間の batch run では、tty / 非 tty を問わず途中出力も逐次 flush するので、進捗付き probe の標準出力をそのまま監視できます。
 
 この ROM route は `pc8001_terminal` 内の少数の hard-coded hook で行入力・キー入力・1文字出力だけを橋渡ししており、完全な PC-8001 エミュレータではありません。
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclass_compat import dataclass
 from typing import Deque
 
 from .display import TextGeometry, TextScreen
@@ -46,6 +46,8 @@ class PC8001Memory:
             raise ValueError("VRAM range exceeds memory size")
 
         self._ram = bytearray(size)
+        self._rom_data = bytearray(size)
+        self._rom_mask = bytearray(size)
         self._rom_regions: list[RomRegion] = []
         self.screen = TextScreen(self.geometry)
         self.current_pc = 0
@@ -57,18 +59,23 @@ class PC8001Memory:
         end = start + len(data)
         if start < 0 or end > self.size:
             raise ValueError(f"ROM range out of bounds: {name} 0x{start:04X}-0x{end - 1:04X}")
-        self._rom_regions.append(RomRegion(name=name, start=start, data=bytes(data)))
+        region_data = bytes(data)
+        self._rom_regions.append(RomRegion(name=name, start=start, data=region_data))
+        self._rom_data[start:end] = region_data
+        self._rom_mask[start:end] = b"\x01" * len(region_data)
 
     def read_byte(self, address: int) -> int:
-        self._check_address(address)
-        region = self._find_rom_region(address)
-        if region is not None:
-            return region.data[address - region.start]
+        if self._rom_mask[address]:
+            return self._rom_data[address]
+        return self._ram[address]
+
+    def read_fetch_byte(self, address: int) -> int:
+        if self._rom_mask[address]:
+            return self._rom_data[address]
         return self._ram[address]
 
     def write_byte(self, address: int, value: int) -> None:
-        self._check_address(address)
-        if self._find_rom_region(address) is not None:
+        if self._rom_mask[address]:
             return
         value &= 0xFF
         self._ram[address] = value
@@ -83,13 +90,12 @@ class PC8001Memory:
                     self.screen.write_byte(row * self.geometry.cols + visible_col, value)
 
     def read_word(self, address: int) -> int:
-        self._check_range(address, 2)
-        low = self.read_byte(address)
-        high = self.read_byte(address + 1)
+        low = self._rom_data[address] if self._rom_mask[address] else self._ram[address]
+        next_address = address + 1
+        high = self._rom_data[next_address] if self._rom_mask[next_address] else self._ram[next_address]
         return low | (high << 8)
 
     def write_word(self, address: int, value: int) -> None:
-        self._check_range(address, 2)
         self.write_byte(address, value & 0xFF)
         self.write_byte(address + 1, (value >> 8) & 0xFF)
 
@@ -137,12 +143,6 @@ class PC8001Memory:
         if start < 0 or start + length > self.size:
             raise ValueError("slice exceeds memory size")
         return bytes(self.read_byte(start + offset) for offset in range(length))
-
-    def _find_rom_region(self, address: int) -> RomRegion | None:
-        for region in self._rom_regions:
-            if region.start <= address < region.end:
-                return region
-        return None
 
     def _record_vram_write(self, address: int, value: int) -> None:
         key = (self.current_pc, address & 0xFFFF)

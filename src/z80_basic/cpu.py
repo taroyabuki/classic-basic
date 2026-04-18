@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclass_compat import dataclass
 
 from .memory import Memory
 
@@ -88,7 +88,7 @@ class Z80CPU:
         self.l = value & 0xFF
 
     def read_next_byte(self) -> int:
-        value = self.memory.read_byte(self.pc)
+        value = self.memory.read_fetch_byte(self.pc)
         self.pc = (self.pc + 1) & 0xFFFF
         return value
 

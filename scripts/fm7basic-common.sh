@@ -39,6 +39,61 @@ die() {
   exit 2
 }
 
+resolve_fm7basic_program_path() {
+  local requested="$1"
+  local candidate
+  local search_root
+  local base_name
+  local -a search_roots=()
+  local -a matches=()
+  declare -A seen=()
+
+  [[ -n "${requested}" ]] || return 1
+
+  if [[ "${requested}" = /* ]]; then
+    [[ -f "${requested}" ]] || return 1
+    printf '%s\n' "${requested}"
+    return 0
+  fi
+
+  if [[ -f "${requested}" ]]; then
+    printf '%s\n' "${requested}"
+    return 0
+  fi
+
+  if [[ "${requested}" == */* ]]; then
+    for search_root in "${PWD}" "${DEFAULT_FM7BASIC_SOURCE_DIR}" "${ROOT_DIR}" "${ROOT_DIR}/.."; do
+      [[ -d "${search_root}" ]] || continue
+      candidate="${search_root}/${requested}"
+      if [[ -f "${candidate}" ]]; then
+        candidate="$(cd "$(dirname "${candidate}")" && pwd)/$(basename "${candidate}")"
+        printf '%s\n' "${candidate}"
+        return 0
+      fi
+    done
+  fi
+
+  base_name="$(basename "${requested}")"
+  search_roots=("${PWD}" "${DEFAULT_FM7BASIC_SOURCE_DIR}" "${ROOT_DIR}" "${ROOT_DIR}/..")
+  for search_root in "${search_roots[@]}"; do
+    [[ -d "${search_root}" ]] || continue
+    while IFS= read -r candidate; do
+      [[ -n "${candidate}" ]] || continue
+      [[ -n "${seen["${candidate}"]+x}" ]] && continue
+      seen["${candidate}"]=1
+      matches+=("${candidate}")
+    done < <(find "${search_root}" -maxdepth 4 -type f -name "${base_name}" 2>/dev/null | sort)
+  done
+
+  if [[ "${#matches[@]}" == "1" ]]; then
+    candidate="$(cd "$(dirname "${matches[0]}")" && pwd)/$(basename "${matches[0]}")"
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+
+  return 1
+}
+
 run_as_root() {
   if [[ "${EUID}" == "0" ]]; then
     "$@"
