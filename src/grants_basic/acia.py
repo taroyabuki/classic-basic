@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque
@@ -14,8 +15,9 @@ STATUS_OVRN = 0x20
 STATUS_PE = 0x40
 STATUS_IRQ = 0x80
 
+_DATACLASS_SLOTS: dict[str, bool] = {"slots": True} if sys.version_info >= (3, 10) else {}
 
-@dataclass(slots=True)
+@dataclass(**_DATACLASS_SLOTS)
 class Acia6850:
     rx_queue: Deque[int] = field(default_factory=deque)
     tx_bytes: bytearray = field(default_factory=bytearray)

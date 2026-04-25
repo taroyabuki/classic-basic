@@ -119,7 +119,7 @@ class NBasicRunnerTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
                 log_path.read_text(encoding="ascii").strip(),
-                f"-m pc8001_terminal {program}",
+                f"-m pc8001_terminal --cols 80 --vram-stride 0xA0 {program}",
             )
 
     def test_runner_prefers_pypy3_when_available(self) -> None:
@@ -162,7 +162,7 @@ class NBasicRunnerTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
                 log_path.read_text(encoding="ascii").strip(),
-                f"-m pc8001_terminal {program}",
+                f"-m pc8001_terminal --cols 80 --vram-stride 0xA0 {program}",
             )
 
     def test_short_run_flag_uses_rom_batch_route(self) -> None:
@@ -194,7 +194,49 @@ class NBasicRunnerTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
                 log_path.read_text(encoding="ascii").strip(),
-                f"-m pc8001_terminal {program}",
+                f"-m pc8001_terminal --cols 80 --vram-stride 0xA0 {program}",
+            )
+
+    def test_run_flag_respects_explicit_cols_and_vram_stride(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            bin_dir = temp_path / "bin"
+            bin_dir.mkdir()
+            log_path = temp_path / "python3.log"
+            _write_executable(
+                bin_dir / "python3",
+                f"""#!/usr/bin/env bash
+                set -euo pipefail
+                printf '%s\\n' "$*" >"{log_path}"
+                """,
+            )
+
+            program = temp_path / "prog.bas"
+            program.write_text("10 PRINT 42\n", encoding="ascii")
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(RUNNER),
+                    "--run",
+                    "--cols",
+                    "64",
+                    "--vram-stride",
+                    "0x80",
+                    "--file",
+                    str(program),
+                ],
+                cwd=ROOT_DIR,
+                env=self._runtime_env(bin_dir),
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                log_path.read_text(encoding="ascii").strip(),
+                f"-m pc8001_terminal --cols 64 --vram-stride 0x80 {program}",
             )
 
     def test_file_flag_loads_program_interactively(self) -> None:

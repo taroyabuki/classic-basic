@@ -15,6 +15,7 @@ from .z80 import ExecutionResult, PortDevice, UnsupportedInstruction, Z80CPU
 ACIA_CONTROL_PORT = 0x80
 ACIA_DATA_PORT = 0x81
 DEFAULT_ROM_PATH = Path(__file__).resolve().parent.parent.parent / "downloads/grants-basic/rom.bin"
+_DATACLASS_SLOTS: dict[str, bool] = {"slots": True} if sys.version_info >= (3, 10) else {}
 
 
 class InputRequestError(RuntimeError):
@@ -43,11 +44,11 @@ class GrantPorts(PortDevice):
             self.acia.write_data(value)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **_DATACLASS_SLOTS)
 class GrantSearleConfig:
     rom_path: Path
     entry_point: int = 0x0000
-    max_steps: int = 200_000
+    max_steps: int = 50_000
     boot_step_budget: int = 10_000_000
     prompt_step_budget: int = 10_000_000
     interactive_max_steps: int = 2_000
@@ -179,25 +180,26 @@ class GrantSearleMachine:
     def run_slice(self, max_steps: int) -> ExecutionResult:
         steps = 0
         self.last_error = None
+        acia = self.acia
+        cpu = self.cpu
         try:
             while steps < max_steps:
-                if self.acia.irq_asserted and self.cpu.iff1:
-                    self.cpu.service_interrupt()
+                if cpu.iff1 and ((acia.receive_irq_enabled and acia.rx_queue) or acia.transmit_irq_enabled):
+                    cpu.service_interrupt()
                     steps += 1
                     continue
-                if self.cpu.halted:
-                    self.last_result = ExecutionResult(reason="halted", steps=steps, pc=self.cpu.pc)
+                if cpu.halted:
+                    self.last_result = ExecutionResult(reason="halted", steps=steps, pc=cpu.pc)
                     self._drain_output()
                     return self.last_result
-                self.cpu.step()
+                cpu.step()
                 steps += 1
-                self._drain_output()
         except UnsupportedInstruction as exc:
             self.last_error = str(exc)
-            self.last_result = ExecutionResult(reason="unsupported", steps=steps, pc=self.cpu.pc)
+            self.last_result = ExecutionResult(reason="unsupported", steps=steps, pc=cpu.pc)
             self._drain_output()
             return self.last_result
-        self.last_result = ExecutionResult(reason="step_limit", steps=steps, pc=self.cpu.pc)
+        self.last_result = ExecutionResult(reason="step_limit", steps=steps, pc=cpu.pc)
         self._drain_output()
         return self.last_result
 

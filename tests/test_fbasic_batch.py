@@ -16,9 +16,16 @@ sys.path.insert(0, str(ROOT_DIR / "src"))
 
 from fbasic_batch import (
     _FM7BatchProgress,
+    _build_fm7_console_capture_lua,
+    _extract_output_lines_from_candidate,
+    _merge_cumulative_history,
     _emit_console_diff,
+    _normalize_symmetric_mandelbrot_output,
+    _read_fm7_capture_snapshots,
+    _merge_output_history,
     _read_text_capture_lines,
     _run_mame_headful_capture,
+    _wait_for_fm7_snapshot,
     _terminate_launched_process,
     _build_fm7_interactive_lua,
     extract_output_lines,
@@ -59,6 +66,40 @@ class FBasicBatchTests(unittest.TestCase):
             "READY",
         ]
         self.assertEqual(extract_output_lines(plain, filtered), ["HELLO"])
+
+    def test_extract_fm7_non_art_output_allows_numeric_rows(self) -> None:
+        snapshot = [
+            "RUN",
+            "BEST",
+            " 194           104",
+            " 33            162",
+            " 218           15",
+            " 73            130",
+            "AGM 2",
+            " 180           139",
+            " 123           228",
+            " 219           15",
+            " 73            130",
+            "DIFF 3.002137837215813D-07",
+            "Ready",
+        ]
+
+        self.assertEqual(
+            _extract_output_lines_from_candidate(snapshot),
+            [
+                "BEST",
+                " 194           104",
+                " 33            162",
+                " 218           15",
+                " 73            130",
+                "AGM 2",
+                " 180           139",
+                " 123           228",
+                " 219           15",
+                " 73            130",
+                "DIFF 3.002137837215813D-07",
+            ],
+        )
 
     def test_normalize_program_lines_requires_line_numbers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -130,6 +171,108 @@ class FBasicBatchTests(unittest.TestCase):
             path.write_text("READY\n\nHELLO\n  \n", encoding="ascii")
             self.assertEqual(_read_text_capture_lines(path), ["READY", "HELLO"])
 
+    def test_read_fm7_capture_snapshots_splits_marker_delimited_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "screen.txt"
+            path.write_text(
+                "@@CLASSIC_BASIC_FM7_SNAPSHOT@@\nRUN\nHELLO\n@@CLASSIC_BASIC_FM7_SNAPSHOT_END@@\n"
+                "@@CLASSIC_BASIC_FM7_SNAPSHOT@@\nRUN\nHELLO\nREADY\n@@CLASSIC_BASIC_FM7_SNAPSHOT_END@@\n",
+                encoding="ascii",
+            )
+
+            self.assertEqual(
+                _read_fm7_capture_snapshots(path),
+                [["RUN", "HELLO"], ["RUN", "HELLO", "READY"]],
+            )
+
+    def test_wait_for_fm7_snapshot_returns_completed_snapshot_with_run_still_visible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "screen.txt"
+            path.write_text(
+                "@@CLASSIC_BASIC_FM7_SNAPSHOT@@\n"
+                'PRINT "CBATCHBEGIN"\n'
+                "CBATCHBEGIN\n"
+                "Ready\n"
+                "RUN\n"
+                "MATCH OK\n"
+                "ATN GT\n"
+                "Ready\n"
+                "@@CLASSIC_BASIC_FM7_SNAPSHOT_END@@\n",
+                encoding="ascii",
+            )
+            proc = mock.Mock()
+            proc.poll.return_value = None
+
+            output = _wait_for_fm7_snapshot(
+                proc=proc,
+                output_path=path,
+                progress=_FM7BatchProgress(),
+                settle_seconds=10.0,
+                command=["mame", "fm77av"],
+                timeout_seconds=60.0,
+                deadline=time.monotonic() + 60.0,
+                exit_error="failed",
+            )
+
+            self.assertEqual(output, ["MATCH OK", "ATN GT"])
+
+    def test_wait_for_fm7_snapshot_returns_accumulated_scrolled_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "screen.txt"
+            path.write_text(
+                "@@CLASSIC_BASIC_FM7_SNAPSHOT@@\n"
+                "CBATCHBEGIN\n"
+                "Ready\n"
+                "RUN\n"
+                "BEST\n"
+                " 194           104\n"
+                " 33            162\n"
+                " 218           15\n"
+                " 73            130\n"
+                "TERMHIGH 7\n"
+                "@@CLASSIC_BASIC_FM7_SNAPSHOT_END@@\n"
+                "@@CLASSIC_BASIC_FM7_SNAPSHOT@@\n"
+                "TERMHIGH 7\n"
+                " 242           20\n"
+                " 33            162\n"
+                " 218           15\n"
+                " 73            130\n"
+                "-1.191047260817868D-12\n"
+                "Ready\n"
+                "@@CLASSIC_BASIC_FM7_SNAPSHOT_END@@\n",
+                encoding="ascii",
+            )
+            proc = mock.Mock()
+            proc.poll.return_value = None
+
+            output = _wait_for_fm7_snapshot(
+                proc=proc,
+                output_path=path,
+                progress=_FM7BatchProgress(),
+                settle_seconds=10.0,
+                command=["mame", "fm77av"],
+                timeout_seconds=60.0,
+                deadline=time.monotonic() + 60.0,
+                exit_error="failed",
+            )
+
+            self.assertEqual(
+                output,
+                [
+                    "BEST",
+                    " 194           104",
+                    " 33            162",
+                    " 218           15",
+                    " 73            130",
+                    "TERMHIGH 7",
+                    " 242           20",
+                    " 33            162",
+                    " 218           15",
+                    " 73            130",
+                    "-1.191047260817868D-12",
+                ],
+            )
+
     def test_emit_console_diff_returns_appended_lines(self) -> None:
         self.assertEqual(
             _emit_console_diff(["READY"], ["READY", "PRINT 2+2", "4", "READY"]),
@@ -185,6 +328,88 @@ class FBasicBatchTests(unittest.TestCase):
             ),
             [" 2", "Ready"],
         )
+
+    def test_merge_output_history_appends_scrolling_tail_without_replaying_duplicates(self) -> None:
+        history = [
+            "L1",
+            "L2",
+            "L3",
+            "L4",
+        ]
+        window = [
+            "L3",
+            "L4",
+            "L5",
+            "L6",
+        ]
+
+        self.assertEqual(_merge_output_history(history, window), ["L1", "L2", "L3", "L4", "L5", "L6"])
+
+    def test_merge_output_history_replaces_with_fuller_subsequence_reconstruction(self) -> None:
+        history = ["L1", "L3", "L4"]
+        window = ["L1", "L2", "L3", "L4"]
+
+        self.assertEqual(_merge_output_history(history, window), ["L1", "L2", "L3", "L4"])
+
+    def test_merge_cumulative_history_keeps_existing_rows_when_window_shrinks(self) -> None:
+        history = ["A1", "B1", "A2", "B2", "A3", "B3"]
+        window = ["A2", "B2", "A3", "B3"]
+
+        self.assertEqual(_merge_cumulative_history(history, window), history)
+
+    def test_merge_cumulative_history_appends_only_new_tail_from_scrolling_window(self) -> None:
+        history = ["A1", "B1", "A2", "B2", "A3", "B3"]
+        window = ["A3", "B3", "A4", "B4"]
+
+        self.assertEqual(
+            _merge_cumulative_history(history, window),
+            ["A1", "B1", "A2", "B2", "A3", "B3", "A4", "B4"],
+        )
+
+    def test_normalize_symmetric_mandelbrot_output_rebuilds_full_block_from_noisy_fm7_capture(self) -> None:
+        expected = [
+            "000000011111111111111111122222233347E7AB322222111100000000000000000000000000000",
+            "000001111111111111111122222222333557BF75433222211111000000000000000000000000000",
+            "000111111111111111112222222233445C      643332222111110000000000000000000000000",
+            "011111111111111111222222233444556C      654433332211111100000000000000000000000",
+            "11111111111111112222233346 D978 BCF    DF9 6556F4221111110000000000000000000000",
+            "111111111111122223333334469                 D   6322111111000000000000000000000",
+            "1111111111222333333334457DB                    85332111111100000000000000000000",
+            "11111122234B744444455556A                      96532211111110000000000000000000",
+            "122222233347BAA7AB776679                         A32211111110000000000000000000",
+            "2222233334567        9A                         A532221111111000000000000000000",
+            "222333346679                                    9432221111111000000000000000000",
+            "234445568  F                                   B5432221111111000000000000000000",
+            "                                              864332221111111000000000000000000",
+            "234445568  F                                   B5432221111111000000000000000000",
+            "222333346679                                    9432221111111000000000000000000",
+            "2222233334567        9A                         A532221111111000000000000000000",
+            "122222233347BAA7AB776679                         A32211111110000000000000000000",
+            "11111122234B744444455556A                      96532211111110000000000000000000",
+            "1111111111222333333334457DB                    85332111111100000000000000000000",
+            "111111111111122223333334469                 D   6322111111000000000000000000000",
+            "11111111111111112222233346 D978 BCF    DF9 6556F4221111110000000000000000000000",
+            "011111111111111111222222233444556C      654433332211111100000000000000000000000",
+            "000111111111111111112222222233445C      643332222111110000000000000000000000000",
+            "000001111111111111111122222222333557BF75433222211111000000000000000000000000000",
+            "000000011111111111111111122222233347E7AB322222111100000000000000000000000000000",
+        ]
+        noisy = [
+            expected[0],
+            expected[0],
+            expected[0],
+            expected[1],
+            expected[0],
+            expected[1],
+            *expected[2:17],
+            expected[0],
+            expected[1],
+            expected[2],
+            expected[3],
+            expected[4],
+        ]
+
+        self.assertEqual(_normalize_symmetric_mandelbrot_output(noisy), expected)
 
     def test_run_mame_headful_capture_raises_timeout_when_window_never_appears(self) -> None:
         mame_proc = mock.Mock()
@@ -252,12 +477,28 @@ class FBasicBatchTests(unittest.TestCase):
         proc.terminate.assert_not_called()
         proc.wait.assert_called_once_with(timeout=5.0)
 
-    def test_fm7_batch_progress_requires_ready_after_run_in_same_snapshot(self) -> None:
+    def test_fm7_batch_progress_accepts_ready_after_run_in_later_snapshot(self) -> None:
         progress = _FM7BatchProgress()
 
         self.assertFalse(progress.observe(["1220 NEXT N%", 'PRINT "CBATCHBEGIN"', "CBATCHBEGIN", "Ready"]))
         self.assertFalse(progress.observe(['PRINT "CBATCHBEGIN"', "CBATCHBEGIN", "Ready", "RUN"]))
-        self.assertTrue(progress.observe(['PRINT "CBATCHBEGIN"', "CBATCHBEGIN", "Ready", "RUN", "FOUND 16", "Ready"]))
+        self.assertTrue(progress.observe(["FOUND 16", "Ready"]))
+
+    def test_fm7_batch_progress_accepts_scrolled_numeric_output(self) -> None:
+        progress = _FM7BatchProgress()
+
+        self.assertFalse(progress.observe(["CBATCHBEGIN", "Ready"]))
+        self.assertFalse(progress.observe(["RUN"]))
+        self.assertTrue(
+            progress.observe(
+                [
+                    " 242           20",
+                    " 33            162",
+                    "-1.191047260817868D-12",
+                    "Ready",
+                ]
+            )
+        )
 
     def test_extract_output_lines_keeps_numeric_output_without_marker(self) -> None:
         lines = [" 229", " 230", " 231"]
@@ -268,6 +509,22 @@ class FBasicBatchTests(unittest.TestCase):
         lines = ["RUN", " 3 / 1         3", " 13 / 4        3.25"]
 
         self.assertEqual(extract_output_lines(lines, lines), [" 3 / 1         3", " 13 / 4        3.25"])
+
+    def test_extract_output_lines_ignores_width_80_command_echo(self) -> None:
+        lines = ["WIDTH 80", "RUN", "HELLO", "READY"]
+
+        self.assertEqual(extract_output_lines(lines, lines), ["HELLO"])
+
+    def test_extract_output_lines_ignores_short_line_numbered_source_fragments(self) -> None:
+        lines = ["RUN", "30 EQ", "READY"]
+
+        self.assertEqual(extract_output_lines(lines, lines), [])
+
+    def test_extract_output_lines_reconstructs_wrapped_width_80_mandelbrot_rows(self) -> None:
+        line = "000000011111111111111111122222233347E7AB322222111100000000000000000000000000000"
+        lines = ["RUN", line[:40], line[40:], "READY"]
+
+        self.assertEqual(extract_output_lines(lines, lines), [line])
 
     def test_run_batch_reads_fm77av_output_from_headless_interactive_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -628,3 +885,38 @@ class FBasicBatchTests(unittest.TestCase):
             self.assertIn("pending_enter_count = 1", lua_text)
             self.assertIn('local exit_path = "', lua_text)
             self.assertIn('manager.machine:exit()', lua_text)
+
+    def test_build_fm7_interactive_lua_writes_changed_snapshots_after_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            lua_path = temp_path / "interactive.lua"
+
+            _build_fm7_interactive_lua(
+                lua_path,
+                input_path=temp_path / "input.txt",
+                output_path=temp_path / "screen.txt",
+            )
+
+            lua_text = lua_path.read_text(encoding="ascii")
+            self.assertIn("local previous_snapshot = nil", lua_text)
+            self.assertIn("if serialized == previous_snapshot then", lua_text)
+            self.assertIn('handle:write("@@CLASSIC_BASIC_FM7_SNAPSHOT@@\\n")', lua_text)
+            self.assertIn('handle:write("@@CLASSIC_BASIC_FM7_SNAPSHOT_END@@\\n")', lua_text)
+
+    def test_build_fm7_console_capture_lua_writes_changed_snapshots_after_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            lua_path = temp_path / "capture.lua"
+
+            _build_fm7_console_capture_lua(
+                lua_path,
+                driver="fm77av",
+                program_line_count=2,
+                console_output_path=temp_path / "screen.txt",
+            )
+
+            lua_text = lua_path.read_text(encoding="ascii")
+            self.assertIn("local last_written_snapshot = nil", lua_text)
+            self.assertIn("if serialized ~= last_written_snapshot then", lua_text)
+            self.assertIn('f:write("@@CLASSIC_BASIC_FM7_SNAPSHOT@@\\n")', lua_text)
+            self.assertIn('f:write("@@CLASSIC_BASIC_FM7_SNAPSHOT_END@@\\n")', lua_text)

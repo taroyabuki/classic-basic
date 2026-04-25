@@ -23,6 +23,21 @@ class GrantsBasicRuntimeTests(unittest.TestCase):
             self.assertEqual(result.reason, "halted")
             self.assertEqual(machine.console_text(), "A")
 
+    def test_run_slice_drains_serial_output_on_step_limit(self) -> None:
+        rom = bytearray(0x2000)
+        rom[0:5] = bytes([0x3E, ord("A"), 0xD3, 0x81, 0x18])
+        rom[5] = 0xFE  # JR -2
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rom.bin"
+            path.write_bytes(rom)
+            machine = GrantSearleMachine(GrantSearleConfig(rom_path=path, max_steps=4))
+            machine.load_rom()
+
+            result = machine.run_slice(4)
+
+            self.assertEqual(result.reason, "step_limit")
+            self.assertEqual(machine.console_text(), "A")
+
     def test_send_file_accepts_common_newline_variants(self) -> None:
         cases = {
             "lf.bas": b"10 PRINT 1\n20 END\n",

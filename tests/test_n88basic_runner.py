@@ -259,6 +259,27 @@ class N88BasicRunnerTests(unittest.TestCase):
             )
             self.assertEqual(env_log_path.read_text(encoding="ascii").strip(), "17.5")
 
+    def test_file_load_uses_extended_ready_timeout(self) -> None:
+        import n88basic_cli
+
+        cli = n88basic_cli.N88BasicCLI()
+
+        with (
+            patch.object(n88basic_cli, "RunControlSession") as run_control_session,
+            patch.object(cli, "ensure_run_bridge", return_value=True),
+            patch.object(cli, "_wait_for_basic_ready", return_value=True),
+            patch.object(cli, "_load_program_with_fallback", return_value=(True, 0)) as load_program,
+            patch.object(cli, "_capture_interactive_screen_lines", return_value=["Ok"]),
+            patch.object(cli, "drain_output", return_value=b""),
+        ):
+            session = run_control_session.return_value
+            session.go.return_value = (True, {})
+            result = cli._enter_basic_interactive_mode("demo/mandelbrot/summary.bas")
+
+        self.assertIs(result, session)
+        self.assertIs(cli.interactive_bridge_session, session)
+        self.assertEqual(load_program.call_args.kwargs["ready_timeout"], n88basic_cli._PROGRAM_LOAD_READY_TIMEOUT)
+
     def test_run_requires_file(self) -> None:
         result = subprocess.run(
             ["bash", str(RUNNER), "--run"],
@@ -334,6 +355,9 @@ class N88BasicRunnerTests(unittest.TestCase):
 
         env = mock_popen.call_args.kwargs["env"]
         self.assertEqual(env["N88BASIC_BRIDGE_ONLY"], "1")
+        command = mock_popen.call_args.args[0]
+        self.assertIn("-nowait", command)
+        self.assertIn("-hsbasic", command)
 
     def test_queue_program_lines_preserves_unsuffixed_decimal_literals(self) -> None:
         from n88basic_cli import N88BasicCLI
@@ -351,7 +375,10 @@ class N88BasicRunnerTests(unittest.TestCase):
         session = _Session()
         cli._capture_interactive_screen_lines = lambda _session: ["Ok"]  # type: ignore[method-assign]
         cli._wait_for_screen_change_and_ready = (  # type: ignore[method-assign]
-            lambda _session, previous_lines, *, timeout: [*previous_lines, f"step-{len(previous_lines)}"]
+            lambda _session, previous_lines, *, timeout, entered_line=None: [
+                *previous_lines,
+                f"step-{len(previous_lines)}",
+            ]
         )
 
         ok, code = cli._queue_program_lines(
@@ -365,6 +392,96 @@ class N88BasicRunnerTests(unittest.TestCase):
         self.assertEqual(
             session.queued,
             ["10 DEFDBL A-Z<CR>", "20 A=.25<CR>", "30 PRINT A<CR>", "40 END<CR>"],
+        )
+
+    def test_wait_for_screen_change_accepts_stable_ready_without_visible_delta(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        class _Session:
+            def wait(self, _milliseconds: int) -> None:
+                return None
+
+        cli = N88BasicCLI()
+        screens = iter([["Ok"], ["Ok"], ["Ok"]])
+        cli._capture_interactive_screen_lines = lambda _session: next(screens)  # type: ignore[method-assign]
+
+        with patch("n88basic_cli.time.monotonic", side_effect=[100.0, 100.0, 100.2, 100.4, 100.6]):
+            lines = cli._wait_for_screen_change_and_ready(_Session(), ["Ok"], timeout=2.0)
+
+        self.assertEqual(lines, ["Ok"])
+
+    def test_wait_for_screen_change_accepts_stable_entered_program_line(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        class _Session:
+            def wait(self, _milliseconds: int) -> None:
+                return None
+
+        cli = N88BasicCLI()
+        screens = iter(
+            [
+                ["Ok", "10 PRINT"],
+                ["Ok", "10 PRINT 42"],
+                ["Ok", "10 PRINT 42"],
+                ["Ok", "10 PRINT 42"],
+            ]
+        )
+        cli._capture_interactive_screen_lines = lambda _session: next(screens)  # type: ignore[method-assign]
+
+        with (
+            patch("n88basic_cli.time.monotonic", side_effect=[100.0, 100.0, 100.0, 100.2, 100.4, 101.3, 101.3]),
+            patch("n88basic_cli.time.sleep", return_value=None),
+        ):
+            lines = cli._wait_for_screen_change_and_ready(
+                _Session(),
+                ["Ok"],
+                timeout=2.0,
+                entered_line="10 PRINT 42",
+            )
+
+        self.assertEqual(lines, ["Ok", "10 PRINT 42"])
+
+    def test_queue_with_retry_retries_queue_full(self) -> None:
+        from n88basic_cli import N88BasicCLI
+        from run_control_bridge import RUN_ERR_OK, RUN_ERR_QUEUE_FULL
+
+        class _Session:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def queue(self, _sequence: str) -> tuple[bool, dict[str, int]]:
+                self.calls += 1
+                if self.calls == 1:
+                    return False, {"code": RUN_ERR_QUEUE_FULL}
+                return True, {"code": RUN_ERR_OK}
+
+            def wait(self, _milliseconds: int) -> None:
+                return None
+
+        cli = N88BasicCLI()
+
+        with patch("n88basic_cli.time.sleep", return_value=None):
+            ok, response = cli._queue_with_retry(_Session(), "10 PRINT 42<CR>", retry_timeout=1.0)
+
+        self.assertTrue(ok)
+        self.assertEqual(response["code"], RUN_ERR_OK)
+
+    def test_pre_run_commands_adds_width_80_for_mandelbrot_asciiart(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        cli = N88BasicCLI()
+
+        self.assertEqual(
+            cli._pre_run_commands("demo/mandelbrot/asciiart.bas"),
+            ["WIDTH 80"],
+        )
+        self.assertEqual(
+            cli._pre_run_commands("demo/mandelbrot/asciiart-40col.bas"),
+            [],
+        )
+        self.assertEqual(
+            cli._pre_run_commands("demo/mandelbrot/summary.bas"),
+            [],
         )
 
     def test_load_program_with_fallback_uses_typed_input_after_ascii_load_failure(self) -> None:
@@ -409,26 +526,44 @@ class N88BasicRunnerTests(unittest.TestCase):
         )
         self.assertEqual(captured["ready_timeout"], 2.0)
 
-    def test_load_program_with_fallback_does_not_queue_missing_files(self) -> None:
+    def test_load_program_with_fallback_uses_typed_input_after_file_not_found(self) -> None:
         from n88basic_cli import N88BasicCLI
-        from run_control_bridge import RUN_ERR_FILE_NOT_FOUND
+        from run_control_bridge import RUN_ERR_FILE_NOT_FOUND, RUN_ERR_OK
 
         class _Session:
             def load(self, _filepath: str, _fmt: str) -> tuple[bool, dict[str, int]]:
                 return False, {"code": RUN_ERR_FILE_NOT_FOUND}
 
         cli = N88BasicCLI()
-        cli._queue_program_lines = lambda *_args, **_kwargs: self.fail("unexpected typed fallback")  # type: ignore[method-assign]
+        captured: dict[str, object] = {}
 
-        ok, code = cli._load_program_with_fallback(
-            _Session(),
-            filepath="/tmp/missing.bas",
-            ready_timeout=2.0,
-            wait_for_ready_after_ascii_load=False,
-        )
+        def _queue_program_lines(
+            _session: object,
+            program_lines: list[str],
+            *,
+            ready_timeout: float,
+        ) -> tuple[bool, int]:
+            captured["lines"] = list(program_lines)
+            captured["ready_timeout"] = ready_timeout
+            return True, RUN_ERR_OK
 
-        self.assertFalse(ok)
-        self.assertEqual(code, RUN_ERR_FILE_NOT_FOUND)
+        cli._queue_program_lines = _queue_program_lines  # type: ignore[method-assign]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            program = Path(tmp) / "prog.bas"
+            program.write_text("10 PRINT 42\n20 END\n", encoding="ascii")
+
+            ok, code = cli._load_program_with_fallback(
+                _Session(),
+                filepath=str(program),
+                ready_timeout=2.0,
+                wait_for_ready_after_ascii_load=False,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(code, RUN_ERR_OK)
+        self.assertEqual(captured["lines"], ["10 PRINT 42", "20 END"])
+        self.assertEqual(captured["ready_timeout"], 2.0)
 
     def test_interactive_screen_output_rewrites_active_line(self) -> None:
         from n88basic_cli import N88BasicCLI
@@ -633,12 +768,106 @@ class N88BasicRunnerTests(unittest.TestCase):
         )
 
         cli = N88BasicCLI()
-        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False: next(states)  # type: ignore[method-assign]
+        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False, baseline_lines=None: next(states)  # type: ignore[method-assign]
 
         completed, output_lines = cli._poll_run_completion(_Session(), timeout_seconds=1.0)
 
         self.assertTrue(completed)
         self.assertEqual(output_lines, ["A", "B", "C", "D"])
+
+    def test_poll_run_completion_can_finish_when_run_echo_is_already_gone(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        class _Session:
+            def wait(self, _timeout_ms: int) -> None:
+                return None
+
+        states = iter(
+            [
+                {
+                    "lines": ["42", "Ok"],
+                    "output_lines": ["42"],
+                    "completed": True,
+                    "saw_run_prompt": True,
+                },
+            ]
+        )
+
+        cli = N88BasicCLI()
+        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False, baseline_lines=None: next(states)  # type: ignore[method-assign]
+
+        completed, output_lines = cli._poll_run_completion(
+            _Session(),
+            timeout_seconds=1.0,
+            saw_run_prompt=True,
+        )
+
+        self.assertTrue(completed)
+        self.assertEqual(output_lines, ["42"])
+
+    def test_capture_run_screen_state_uses_baseline_when_run_echo_is_gone(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        cli = N88BasicCLI()
+        cli._capture_run_screen_lines = lambda _session: [  # type: ignore[method-assign]
+            "How many files(0-15)? 2",
+            "NEC N-88 BASIC Version 2.3",
+            "Copyright (C) 1981 Microsoft",
+            "56276 Bytes free",
+            "Ok",
+            "10 PRINT 42",
+            "20 END",
+            " 42",
+            "Ok",
+        ]
+
+        state = cli._capture_run_screen_state(
+            object(),
+            saw_run_prompt=True,
+            baseline_lines=[
+                "How many files(0-15)? 2",
+                "NEC N-88 BASIC Version 2.3",
+                "Copyright (C) 1981 Microsoft",
+                "56276 Bytes free",
+                "Ok",
+                "10 PRINT 42",
+                "20 END",
+            ],
+        )
+
+        self.assertTrue(state["completed"])
+        self.assertEqual(state["output_lines"], [" 42"])
+
+    def test_capture_run_screen_state_does_not_complete_on_baseline_ready_only(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        cli = N88BasicCLI()
+        cli._capture_run_screen_lines = lambda _session: ["Ok"]  # type: ignore[method-assign]
+
+        state = cli._capture_run_screen_state(
+            object(),
+            saw_run_prompt=True,
+            baseline_lines=[],
+        )
+
+        self.assertFalse(state["completed"])
+        self.assertEqual(state["output_lines"], [])
+
+    def test_screen_has_basic_ready_requires_trailing_ok_prompt(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        cli = N88BasicCLI()
+
+        self.assertFalse(
+            cli._screen_has_basic_ready(
+                [
+                    "NEC N-88 BASIC Version 2.3",
+                    "Ok",
+                    "10 PRINT \"STILL TYPING",
+                ]
+            )
+        )
+        self.assertTrue(cli._screen_has_basic_ready(["10 PRINT \"DONE\"", "Ok"]))
 
     def test_poll_run_completion_skips_inflight_trailing_line_until_completed(self) -> None:
         from n88basic_cli import N88BasicCLI
@@ -675,7 +904,7 @@ class N88BasicRunnerTests(unittest.TestCase):
         )
 
         cli = N88BasicCLI()
-        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False: next(states)  # type: ignore[method-assign]
+        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False, baseline_lines=None: next(states)  # type: ignore[method-assign]
 
         completed, output_lines = cli._poll_run_completion(_Session(), timeout_seconds=1.0)
 
@@ -747,7 +976,7 @@ class N88BasicRunnerTests(unittest.TestCase):
         )
 
         cli = N88BasicCLI()
-        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False: next(states)  # type: ignore[method-assign]
+        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False, baseline_lines=None: next(states)  # type: ignore[method-assign]
 
         completed, output_lines = cli._poll_run_completion(_Session(), timeout_seconds=1.0)
 
@@ -802,7 +1031,7 @@ class N88BasicRunnerTests(unittest.TestCase):
         )
 
         cli = N88BasicCLI()
-        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False: next(states)  # type: ignore[method-assign]
+        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False, baseline_lines=None: next(states)  # type: ignore[method-assign]
 
         completed, output_lines = cli._poll_run_completion(_Session(), timeout_seconds=1.0)
 
@@ -835,6 +1064,159 @@ class N88BasicRunnerTests(unittest.TestCase):
                 "1.110223024625157D-16",
             ],
         )
+
+    def test_poll_run_completion_waits_for_stable_mandelbrot_block(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        class _Session:
+            def wait(self, _timeout_ms: int) -> None:
+                return None
+
+        art = [
+            "000000011111111111111111122222233347E7AB322222111100000000000000000000000000000",
+            "000001111111111111111122222222333557BF75433222211111000000000000000000000000000",
+            "000111111111111111112222222233445C      643332222111110000000000000000000000000",
+            "011111111111111111222222233444556C      654433332211111100000000000000000000000",
+            "11111111111111112222233346 D978 BCF    DF9 6556F4221111110000000000000000000000",
+            "111111111111122223333334469                 D   6322111111000000000000000000000",
+            "1111111111222333333334457DB                    85332111111100000000000000000000",
+            "11111122234B744444455556A                      96532211111110000000000000000000",
+            "122222233347BAA7AB776679                         A32211111110000000000000000000",
+            "2222233334567        9A                         A532221111111000000000000000000",
+            "222333346679                                    9432221111111000000000000000000",
+            "234445568  F                                   B5432221111111000000000000000000",
+            "                                              864332221111111000000000000000000",
+            "234445568  F                                   B5432221111111000000000000000000",
+            "222333346679                                    9432221111111000000000000000000",
+            "2222233334567        9A                         A532221111111000000000000000000",
+            "122222233347BAA7AB776679                         A32211111110000000000000000000",
+            "11111122234B744444455556A                      96532211111110000000000000000000",
+            "1111111111222333333334457DB                    85332111111100000000000000000000",
+            "111111111111122223333334469                 D   6322111111000000000000000000000",
+            "11111111111111112222233346 D978 BCF    DF9 6556F4221111110000000000000000000000",
+            "011111111111111111222222233444556C      654433332211111100000000000000000000000",
+            "000111111111111111112222222233445C      643332222111110000000000000000000000000",
+            "000001111111111111111122222222333557BF75433222211111000000000000000000000000000",
+            "000000011111111111111111122222233347E7AB322222111100000000000000000000000000000",
+        ]
+        states = iter(
+            [
+                {"lines": art[:12], "output_lines": art[:12], "completed": False, "art_fragments": True, "art_block": []},
+                {"lines": art, "output_lines": art, "completed": False, "art_fragments": True, "art_block": art},
+                {"lines": art, "output_lines": art, "completed": False, "art_fragments": True, "art_block": art},
+            ]
+        )
+
+        cli = N88BasicCLI()
+        emitted: list[list[str]] = []
+        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False, baseline_lines=None: next(states)  # type: ignore[method-assign]
+
+        completed, output_lines = cli._poll_run_completion(
+            _Session(),
+            timeout_seconds=1.0,
+            emit_output=lambda chunk: emitted.append(list(chunk)),
+        )
+
+        self.assertTrue(completed)
+        self.assertEqual(output_lines, art)
+        self.assertEqual(emitted, [art])
+
+    def test_poll_run_completion_reconstructs_mandelbrot_from_scrolling_history(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        class _Session:
+            def wait(self, _timeout_ms: int) -> None:
+                return None
+
+        art = [
+            "000000011111111111111111122222233347E7AB322222111100000000000000000000000000000",
+            "000001111111111111111122222222333557BF75433222211111000000000000000000000000000",
+            "000111111111111111112222222233445C      643332222111110000000000000000000000000",
+            "011111111111111111222222233444556C      654433332211111100000000000000000000000",
+            "11111111111111112222233346 D978 BCF    DF9 6556F4221111110000000000000000000000",
+            "111111111111122223333334469                 D   6322111111000000000000000000000",
+            "1111111111222333333334457DB                    85332111111100000000000000000000",
+            "11111122234B744444455556A                      96532211111110000000000000000000",
+            "122222233347BAA7AB776679                         A32211111110000000000000000000",
+            "2222233334567        9A                         A532221111111000000000000000000",
+            "222333346679                                    9432221111111000000000000000000",
+            "234445568  F                                   B5432221111111000000000000000000",
+            "                                              864332221111111000000000000000000",
+            "234445568  F                                   B5432221111111000000000000000000",
+            "222333346679                                    9432221111111000000000000000000",
+            "2222233334567        9A                         A532221111111000000000000000000",
+            "122222233347BAA7AB776679                         A32211111110000000000000000000",
+            "11111122234B744444455556A                      96532211111110000000000000000000",
+            "1111111111222333333334457DB                    85332111111100000000000000000000",
+            "111111111111122223333334469                 D   6322111111000000000000000000000",
+            "11111111111111112222233346 D978 BCF    DF9 6556F4221111110000000000000000000000",
+            "011111111111111111222222233444556C      654433332211111100000000000000000000000",
+            "000111111111111111112222222233445C      643332222111110000000000000000000000000",
+            "000001111111111111111122222222333557BF75433222211111000000000000000000000000000",
+            "000000011111111111111111122222233347E7AB322222111100000000000000000000000000000",
+        ]
+        states = iter(
+            [
+                {"lines": art[:10], "output_lines": art[:10], "completed": False, "art_fragments": True, "art_block": []},
+                {"lines": art[8:18], "output_lines": art[8:18], "completed": False, "art_fragments": True, "art_block": []},
+                {"lines": art[16:], "output_lines": art[16:], "completed": False, "art_fragments": True, "art_block": []},
+                {"lines": art[16:] + ["Ok"], "output_lines": art[16:], "completed": True, "art_fragments": True, "art_block": []},
+            ]
+        )
+
+        cli = N88BasicCLI()
+        emitted: list[list[str]] = []
+        cli._capture_run_screen_state = lambda _session, *, saw_run_prompt=False, baseline_lines=None: next(states)  # type: ignore[method-assign]
+
+        completed, output_lines = cli._poll_run_completion(
+            _Session(),
+            timeout_seconds=1.0,
+            emit_output=lambda chunk: emitted.append(list(chunk)),
+        )
+
+        self.assertTrue(completed)
+        self.assertEqual(output_lines, art)
+        self.assertEqual(emitted, [art])
+
+    def test_capture_run_screen_state_detects_mandelbrot_block(self) -> None:
+        from n88basic_cli import N88BasicCLI
+
+        art = [
+            "000000011111111111111111122222233347E7AB322222111100000000000000000000000000000",
+            "000001111111111111111122222222333557BF75433222211111000000000000000000000000000",
+            "000111111111111111112222222233445C      643332222111110000000000000000000000000",
+            "011111111111111111222222233444556C      654433332211111100000000000000000000000",
+            "11111111111111112222233346 D978 BCF    DF9 6556F4221111110000000000000000000000",
+            "111111111111122223333334469                 D   6322111111000000000000000000000",
+            "1111111111222333333334457DB                    85332111111100000000000000000000",
+            "11111122234B744444455556A                      96532211111110000000000000000000",
+            "122222233347BAA7AB776679                         A32211111110000000000000000000",
+            "2222233334567        9A                         A532221111111000000000000000000",
+            "222333346679                                    9432221111111000000000000000000",
+            "234445568  F                                   B5432221111111000000000000000000",
+            "                                              864332221111111000000000000000000",
+            "234445568  F                                   B5432221111111000000000000000000",
+            "222333346679                                    9432221111111000000000000000000",
+            "2222233334567        9A                         A532221111111000000000000000000",
+            "122222233347BAA7AB776679                         A32211111110000000000000000000",
+            "11111122234B744444455556A                      96532211111110000000000000000000",
+            "1111111111222333333334457DB                    85332111111100000000000000000000",
+            "111111111111122223333334469                 D   6322111111000000000000000000000",
+            "11111111111111112222233346 D978 BCF    DF9 6556F4221111110000000000000000000000",
+            "011111111111111111222222233444556C      654433332211111100000000000000000000000",
+            "000111111111111111112222222233445C      643332222111110000000000000000000000000",
+            "000001111111111111111122222222333557BF75433222211111000000000000000000000000000",
+            "000000011111111111111111122222233347E7AB322222111100000000000000000000000000000",
+            "Ok",
+        ]
+
+        cli = N88BasicCLI()
+        cli._capture_run_screen_lines = lambda _session: art  # type: ignore[method-assign]
+
+        state = cli._capture_run_screen_state(object(), saw_run_prompt=True)
+
+        self.assertEqual(state["art_block"], art[:-1])
+        self.assertTrue(state["art_fragments"])
 
     def test_startup_screen_snapshot_uses_crlf(self) -> None:
         from n88basic_cli import N88BasicCLI
@@ -923,7 +1305,8 @@ class N88BasicRunnerTests(unittest.TestCase):
             self._read_until(master_fd, b"Ok", timeout=30)
             os.write(master_fd, b'PRINT "A"\r')
             output = self._read_until(master_fd, b"A", timeout=30)
-            output += self._read_until(master_fd, b"Ok", timeout=30)
+            if b"Ok" not in output:
+                output += self._read_until(master_fd, b"Ok", timeout=30)
             os.write(master_fd, b"\x04")
             proc.wait(timeout=10)
         finally:
@@ -1000,7 +1383,8 @@ class N88BasicRunnerTests(unittest.TestCase):
                 self._read_until(master_fd, b"Ok", timeout=60)
                 os.write(master_fd, b"RUN\r")
                 output = self._read_until(master_fd, b".25", timeout=30)
-                output += self._read_until(master_fd, b"Ok", timeout=30)
+                if b"Ok" not in output:
+                    output += self._read_until(master_fd, b"Ok", timeout=30)
                 os.write(master_fd, b"\x04")
                 proc.wait(timeout=10)
             finally:

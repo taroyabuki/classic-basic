@@ -11,6 +11,7 @@ from msx_basic.cli import main
 from msx_basic.loop import (
     _BLINK_BLOCK_CURSOR,
     _INTERACTIVE_INPUT_TIMEOUT,
+    _batch_pre_run_commands,
     _build_ignored_source_lines,
     _emit_filtered_batch_lines,
     _filter_batch_result_lines,
@@ -529,6 +530,46 @@ class MsxBasicLoopTests(unittest.TestCase):
             ["52163 / 16604 3.1415923873765"],
         )
 
+    def test_filter_batch_result_lines_reconstructs_segmented_mandelbrot_output(self) -> None:
+        reconstructed = "000000011111111111111111122222233347E7AB322222111100000000000000000000000000000"
+        self.assertEqual(
+            _filter_batch_result_lines(
+                [
+                    "100 PRINT \"ignored source\"",
+                    "100 PRINT \"ignored source\"",
+                    "100 PRINT \"ignored source\"",
+                ]
+                + (
+                    [
+                        "1" + reconstructed[:37] + "|",
+                        "2" + reconstructed[37:74] + "|",
+                        "3" + reconstructed[74:] + "|",
+                    ]
+                    * 25
+                ),
+                ['100 PRINT "ignored source"'],
+            ),
+            [reconstructed] * 25,
+        )
+
+    def test_filter_batch_result_lines_holds_partial_segmented_mandelbrot_output(self) -> None:
+        self.assertEqual(
+            _filter_batch_result_lines(
+                [
+                    "1" + "000000011111111111111111122222233347E" + "|",
+                    "2" + "7AB3222221111000000000000000000000000" + "|",
+                ],
+                [],
+            ),
+            [],
+        )
+
+    def test_filter_batch_result_lines_ignores_width_80_command_echo(self) -> None:
+        self.assertEqual(_filter_batch_result_lines(["WIDTH 80", "HELLO"], []), ["HELLO"])
+
+    def test_batch_pre_run_commands_does_not_assume_width_80_support(self) -> None:
+        self.assertEqual(_batch_pre_run_commands(Path("demo/mandelbrot/asciiart.bas")), [])
+
     def test_emit_and_final_batch_filters_share_same_ignored_source_lines(self) -> None:
         stdout = io.StringIO()
         loaded_lines = [
@@ -537,13 +578,13 @@ class MsxBasicLoopTests(unittest.TestCase):
             "184  NEXT",
         ]
         ignored_lines = _build_ignored_source_lines(loaded_lines)
-        emitted_count = [0]
+        emitted_lines: list[str] = []
         observed_lines = [')),2);" ";', "41 31 41 59 26 53 58 98"]
 
         with patch("sys.stdout", stdout):
-            _emit_filtered_batch_lines(observed_lines, loaded_lines, emitted_count, ignored_lines)
+            _emit_filtered_batch_lines(observed_lines, loaded_lines, emitted_lines, ignored_lines)
             _print_batch_result(
-                _filter_batch_result_lines(observed_lines, loaded_lines, ignored_lines)[emitted_count[0] :],
+                _filter_batch_result_lines(observed_lines, loaded_lines, ignored_lines)[len(emitted_lines) :],
                 loaded_lines,
                 ignored_lines,
             )
@@ -552,15 +593,28 @@ class MsxBasicLoopTests(unittest.TestCase):
 
     def test_emit_filtered_batch_lines_counts_incremental_emissions(self) -> None:
         stdout = io.StringIO()
-        emitted_count = [0]
+        emitted_lines: list[str] = []
 
         with patch("sys.stdout", stdout):
-            _emit_filtered_batch_lines(["FIRST"], [], emitted_count)
-            _emit_filtered_batch_lines(["SECOND"], [], emitted_count)
-            _print_batch_result(["FIRST", "SECOND"][emitted_count[0] :], [])
+            _emit_filtered_batch_lines(["FIRST"], [], emitted_lines)
+            _emit_filtered_batch_lines(["FIRST", "SECOND"], [], emitted_lines)
+            _print_batch_result(["FIRST", "SECOND"][len(emitted_lines) :], [])
 
         self.assertEqual(stdout.getvalue(), "FIRST\nSECOND\n")
-        self.assertEqual(emitted_count[0], 2)
+        self.assertEqual(emitted_lines, ["FIRST", "SECOND"])
+
+    def test_emit_filtered_batch_lines_diffs_reconstructed_mandelbrot_output(self) -> None:
+        stdout = io.StringIO()
+        emitted_lines: list[str] = []
+        line = "000000011111111111111111122222233347E7AB322222111100000000000000000000000000000"
+        fragmented = [line[:37], line[37:74], line[74:]]
+
+        with patch("sys.stdout", stdout):
+            _emit_filtered_batch_lines(fragmented * 24, [], emitted_lines)
+            _emit_filtered_batch_lines(fragmented * 25, [], emitted_lines)
+            _emit_filtered_batch_lines(fragmented * 25, [], emitted_lines)
+
+        self.assertEqual(stdout.getvalue(), (f"{line}\n") * 25)
 
     def test_batch_output_tracker_merges_scrolling_windows_without_replaying_history(self) -> None:
         tracker = BatchOutputTracker()
@@ -589,6 +643,24 @@ class MsxBasicLoopTests(unittest.TestCase):
         tracker.capture_window(["2", "3", "4"], 0, 3)
 
         self.assertEqual(tracker.finish(["2", "3", "4"], 3), ["1", "2", "3", "4"])
+
+    def test_batch_output_tracker_keeps_history_when_later_window_repeats_old_lines(self) -> None:
+        tracker = BatchOutputTracker()
+
+        tracker.observe(["A", "B", "A"], 3)
+        tracker.capture_window(["A", "B", "A"], 0, 3)
+        tracker.observe(["B", "A", "B", "A"], 4)
+        tracker.capture_window(["B", "A", "B", "A"], 0, 4)
+
+        self.assertEqual(tracker.finish(["B", "A", "B", "A"], 4), ["A", "B", "A", "B", "A"])
+
+    def test_batch_output_tracker_preserves_mandelbrot_fragment_whitespace(self) -> None:
+        tracker = BatchOutputTracker()
+
+        tracker.observe(["  1234"], 1)
+        tracker.capture_window(["  1234"], 0, 1)
+
+        self.assertEqual(tracker.finish(["  1234"], 1), ["  1234"])
 
     def test_run_loop_exits_on_ctrl_d_without_forwarding_input(self) -> None:
         bridge = FakeBridge([_screen(0, (0, "Ok"))])

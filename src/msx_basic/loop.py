@@ -13,6 +13,8 @@ from pathlib import Path
 import sys
 from collections.abc import Callable
 
+from mandelbrot_output import MANDELBROT_ALLOWED_CHARS, extract_any_mandelbrot_block, has_segmented_mandelbrot_fragments
+
 from .bridge import OpenMSXBridge
 from .program_check import validate_program_text
 
@@ -57,6 +59,10 @@ _SOURCE_LISTING_KEYWORDS = (
     "DEF",
     "CLS",
 )
+
+
+def _is_width_80_command(text: str) -> bool:
+    return re.fullmatch(r"WIDTH\s*80", text.strip(), re.IGNORECASE) is not None
 
 
 def _parse_timeout_spec(spec: str | None) -> float | None:
@@ -293,13 +299,6 @@ class BatchOutputTracker:
         if not candidates:
             return
 
-        # If _lines is a subsequence of candidates, the screen snapshot contains
-        # a complete view (observe may have missed lines due to get_screen /
-        # get_cursor_row race).  Replace _lines with the fuller candidates list.
-        if _is_subsequence(self._lines, candidates):
-            self._lines = list(candidates)
-            return
-
         # Otherwise find the longest suffix of _lines that matches a prefix of
         # candidates and append only the new tail.
         overlap = min(len(self._lines), len(candidates))
@@ -318,8 +317,11 @@ class BatchOutputTracker:
         self._lines.append(stripped)
 
     def _normalize(self, line: str) -> str | None:
-        stripped = line.strip()
+        normalized = line
+        stripped = normalized.strip()
         if not stripped or stripped in {"Ok", "RUN", "R"}:
+            return None
+        if _is_width_80_command(stripped):
             return None
         if stripped == _FUNCTION_KEY_GUIDE:
             return None
@@ -335,7 +337,17 @@ class BatchOutputTracker:
             return None
         if stripped in self._ignored_lines:
             return None
+        if _looks_like_mandelbrot_fragment_text(normalized):
+            return normalized
         return stripped
+
+
+def _looks_like_mandelbrot_fragment_text(text: str) -> bool:
+    if not text or len(text) > 79:
+        return False
+    if all(char == " " for char in text):
+        return False
+    return all(char in MANDELBROT_ALLOWED_CHARS for char in text)
 
 
 def _emit_events(events: list[tuple[str, str]]) -> None:
@@ -581,19 +593,21 @@ def run_batch(bridge: OpenMSXBridge, program: Path) -> int:
     _wait_for_stable_ok_prompt(bridge, timeout=4.0)
     _configure_batch_speed(bridge)
     loaded_lines = _load_program_lines(bridge, program)
+    pre_run_commands = _batch_pre_run_commands(program)
     ignored_lines = _build_ignored_source_lines(loaded_lines)
-    emitted_count = [0]
+    ignored_lines.update(pre_run_commands)
 
     initial_lines, initial_cursor_row = _get_screen_state(bridge, timeout=1.0)
     output_lines = _run_loaded_program(
         bridge,
         initial_lines=initial_lines,
         initial_cursor_row=initial_cursor_row,
+        pre_run_commands=pre_run_commands,
         ignored_lines=ignored_lines,
-        emit_lines=lambda lines: _emit_filtered_batch_lines(lines, loaded_lines, emitted_count, ignored_lines),
+        emit_lines=None,
     )
     _print_batch_result(
-        _filter_batch_result_lines(output_lines, loaded_lines, ignored_lines)[emitted_count[0] :],
+        _filter_batch_result_lines(output_lines, loaded_lines, ignored_lines),
         loaded_lines,
         ignored_lines,
     )
@@ -612,18 +626,20 @@ def run_loaded_batch(bridge: OpenMSXBridge, program: Path) -> int:
         for line in source_text.splitlines()
         if line.rstrip("\r")
     ]
+    pre_run_commands = _batch_pre_run_commands(program)
     ignored_lines = _build_ignored_source_lines(loaded_lines)
-    emitted_count = [0]
+    ignored_lines.update(pre_run_commands)
     initial_lines, initial_cursor_row = _get_screen_state(bridge, timeout=1.0)
     output_lines = _run_loaded_program(
         bridge,
         initial_lines=initial_lines,
         initial_cursor_row=initial_cursor_row,
+        pre_run_commands=pre_run_commands,
         ignored_lines=ignored_lines,
-        emit_lines=lambda lines: _emit_filtered_batch_lines(lines, loaded_lines, emitted_count, ignored_lines),
+        emit_lines=None,
     )
     _print_batch_result(
-        _filter_batch_result_lines(output_lines, loaded_lines, ignored_lines)[emitted_count[0] :],
+        _filter_batch_result_lines(output_lines, loaded_lines, ignored_lines),
         loaded_lines,
         ignored_lines,
     )
@@ -672,10 +688,14 @@ def _run_loaded_program(
     *,
     initial_lines: list[str],
     initial_cursor_row: int,
+    pre_run_commands: list[str],
     ignored_lines: set[str],
     emit_lines: Callable[[list[str]], None] | None = None,
 ) -> list[str]:
     _wait_for_stable_ok_prompt(bridge, timeout=4.0)
+    for command in pre_run_commands:
+        bridge.type_text(f"{command}\r", via_keybuf=True, timeout=_BATCH_INPUT_TIMEOUT)
+        _wait_for_stable_ok_prompt(bridge, timeout=4.0)
     bridge.type_text("RUN\r", via_keybuf=True, timeout=_BATCH_INPUT_TIMEOUT)
     return _drain_until_prompt(
         bridge,
@@ -848,7 +868,7 @@ def _drain_until_prompt(
             tracker.observe(lines, cursor_row)
             tracker.capture_window(lines, 0, cursor_row)
             if emit_lines is not None and len(tracker._lines) > previous_count:
-                emit_lines(tracker._lines[previous_count:])
+                emit_lines(tracker._lines)
             if _post_run_prompt_visible(lines, cursor_row):
                 previous_count = len(tracker._lines)
                 tracker.capture_window(lines, initial_cursor_row, cursor_row)
@@ -856,7 +876,7 @@ def _drain_until_prompt(
                 if run_row is not None:
                     tracker.capture_window(lines, run_row + 1, cursor_row)
                 if emit_lines is not None and len(tracker._lines) > previous_count:
-                    emit_lines(tracker._lines[previous_count:])
+                    emit_lines(tracker._lines)
                 return tracker.finish(lines, cursor_row)
         last_lines = lines
         last_cursor_row = cursor_row
@@ -876,13 +896,17 @@ def _print_batch_result(
 def _emit_filtered_batch_lines(
     lines: list[str],
     loaded_lines: list[str],
-    emitted_count: list[int],
+    emitted_lines: list[str],
     ignored_lines: set[str] | None = None,
 ) -> None:
     filtered_lines = _filter_batch_result_lines(lines, loaded_lines, ignored_lines)
-    for line in filtered_lines:
+    prefix = 0
+    limit = min(len(emitted_lines), len(filtered_lines))
+    while prefix < limit and emitted_lines[prefix] == filtered_lines[prefix]:
+        prefix += 1
+    for line in filtered_lines[prefix:]:
         print(line)
-    emitted_count[0] += len(filtered_lines)
+    emitted_lines[:] = filtered_lines
 
 
 def _filter_batch_result_lines(
@@ -890,11 +914,18 @@ def _filter_batch_result_lines(
     loaded_lines: list[str],
     ignored_lines: set[str] | None = None,
 ) -> list[str]:
+    mandelbrot_block = extract_any_mandelbrot_block(lines)
+    if mandelbrot_block:
+        return mandelbrot_block
+    if _has_segmented_mandelbrot_fragments_with_gutter(lines):
+        return []
     source_lines = {line.strip() for line in loaded_lines}
     ignored = ignored_lines if ignored_lines is not None else _build_ignored_source_lines(loaded_lines)
     filtered: list[str] = []
     for line in lines:
         stripped = line.strip()
+        if _is_width_80_command(stripped):
+            continue
         if stripped in source_lines:
             continue
         if stripped in ignored:
@@ -903,6 +934,39 @@ def _filter_batch_result_lines(
             continue
         filtered.append(line)
     return _merge_wrapped_batch_result_lines(filtered)
+
+
+def _has_segmented_mandelbrot_fragments_with_gutter(lines: list[str]) -> bool:
+    materialized = [line.rstrip("\r\n") for line in lines]
+    if has_segmented_mandelbrot_fragments(materialized) or _has_plain_fragment_run(materialized):
+        return True
+    for indent in range(1, 5):
+        prefix = " " * indent
+        dedented = [line[indent:] if line.startswith(prefix) else line for line in materialized]
+        if has_segmented_mandelbrot_fragments(dedented) or _has_plain_fragment_run(dedented):
+            return True
+    return False
+
+
+def _has_plain_fragment_run(lines: list[str]) -> bool:
+    run = 0
+    for line in lines:
+        stripped = line.strip()
+        if (
+            stripped
+            and all(char in MANDELBROT_ALLOWED_CHARS for char in stripped)
+            and (len(stripped) == 5 or 25 <= len(stripped) <= 37)
+        ):
+            run += 1
+            if run >= 3:
+                return True
+        else:
+            run = 0
+    return False
+
+
+def _batch_pre_run_commands(program: Path) -> list[str]:
+    return []
 
 
 def _merge_wrapped_batch_result_lines(lines: list[str]) -> list[str]:

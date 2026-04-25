@@ -57,6 +57,20 @@ class DosBatchFilterTests(unittest.TestCase):
             ],
         )
 
+    def test_extract_clean_lines_preserves_mandelbrot_whitespace(self) -> None:
+        raw = (
+            "000111111111111111112222222233445C      643332222111110000000000000000000000000\r\n"
+            "                                              864332221111111000000000000000000\r\n"
+        )
+
+        self.assertEqual(
+            extract_clean_lines(raw),
+            [
+                "000111111111111111112222222233445C      643332222111110000000000000000000000000",
+                "                                              864332221111111000000000000000000",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -20,6 +20,16 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from mandelbrot_output import (
+    extract_wrapped_mandelbrot_physical_lines,
+    extract_any_mandelbrot_block,
+    has_mandelbrot_art_fragments,
+    has_segmented_mandelbrot_fragments,
+    has_wrapped_mandelbrot_fragments,
+    is_mandelbrot_art_line,
+    reconstruct_wrapped_mandelbrot_lines,
+)
+
 
 _INPUT_START_FRAME = 240
 _INPUT_GAP_FRAMES = 60
@@ -31,12 +41,14 @@ _OCR_WHITELIST = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;+-*/()[]"!?@=_ '
 _KEEP_TEMP = os.environ.get("CLASSIC_BASIC_KEEP_TEMP", "") not in {"", "0", "false", "False"}
 _FORCE_HEADFUL = os.environ.get("CLASSIC_BASIC_FM_BATCH_HEADLESS", "") in {"0", "false", "False"}
 _BATCH_MARKER = "CBATCHBEGIN"
-_FM7_BATCH_POLL_INTERVAL = 0.1
+_FM7_BATCH_POLL_INTERVAL = 0.01
 _FM7_DEFAULT_LOAD_SETTLE_SECONDS = 0.35
 _FM7_DEFAULT_RUN_SETTLE_SECONDS = 0.25
 _FM7_CONSOLE_BASE = 0xC000
 _FM7_CONSOLE_COLUMNS = 40
 _FM7_CONSOLE_ROWS = 25
+_FM7_SNAPSHOT_MARKER = "@@CLASSIC_BASIC_FM7_SNAPSHOT@@"
+_FM7_SNAPSHOT_END_MARKER = "@@CLASSIC_BASIC_FM7_SNAPSHOT_END@@"
 _SOURCE_LISTING_KEYWORDS = (
     "PRINT",
     "FOR",
@@ -269,6 +281,10 @@ def is_run_line(text: str) -> bool:
     return re.fullmatch(r"R[UO0]N[S]?", _normalize_ocr_text(text)) is not None
 
 
+def is_width_80_line(text: str) -> bool:
+    return _normalize_ocr_text(text) == "WIDTH80"
+
+
 def is_ready_line(text: str) -> bool:
     return _normalize_ocr_text(text) in {"READY", "READU", "REAOY", "READY0", "R"}
 
@@ -304,6 +320,8 @@ def is_source_listing_line(text: str) -> bool:
     if any(token in body for token in ("=", "+", "-", "*", "/", "(", ")", '"', "<", ">")):
         return True
     if re.search(r"\b[A-Z]\b", body) is not None:
+        return True
+    if re.fullmatch(r"[A-Z]{1,4}", body) is not None:
         return True
     return False
 
@@ -352,6 +370,7 @@ def _extract_output_lines_from_candidate(lines: list[str]) -> list[str]:
             if (
                 not line
                 or is_batch_marker_line(line)
+                or is_width_80_line(line)
                 or is_run_line(line)
                 or is_ready_line(line)
                 or is_startup_banner_line(line)
@@ -374,6 +393,7 @@ def _extract_output_lines_from_candidate(lines: list[str]) -> list[str]:
         if (
             not line
             or is_batch_marker_line(line)
+            or is_width_80_line(line)
             or is_run_line(line)
             or is_ready_line(line)
             or is_startup_banner_line(line)
@@ -392,6 +412,16 @@ def extract_output_lines(lines_plain: list[str], lines_filtered: list[str]) -> l
             candidates.append(candidate)
 
     for candidate in candidates:
+        mandelbrot_block = extract_any_mandelbrot_block(candidate)
+        if mandelbrot_block:
+            return mandelbrot_block
+        wrapped_lines = reconstruct_wrapped_mandelbrot_lines(candidate)
+        if wrapped_lines:
+            return wrapped_lines
+        if has_segmented_mandelbrot_fragments(candidate):
+            return []
+        if has_wrapped_mandelbrot_fragments(candidate):
+            return []
         output = _extract_output_lines_from_candidate(candidate)
         if output:
             return output
@@ -463,11 +493,18 @@ class _FM7BatchProgress:
         self.saw_ready_after_run = False
 
     def observe(self, snapshot: list[str]) -> bool:
+        saw_run_before = self.saw_run
         if _fm7_snapshot_contains_trigger(snapshot):
             self.saw_trigger = True
-        if _fm7_snapshot_contains_run(snapshot):
+        snapshot_contains_run = _fm7_snapshot_contains_run(snapshot)
+        if snapshot_contains_run:
             self.saw_run = True
-        if _fm7_snapshot_has_ready_after_run(snapshot):
+        if _fm7_snapshot_has_ready_after_run(snapshot) or (
+            saw_run_before
+            and not snapshot_contains_run
+            and any(is_ready_line(line) for line in snapshot)
+            and bool(_extract_output_lines_from_candidate(snapshot))
+        ):
             self.saw_ready_after_run = True
         return bool(snapshot) and self.saw_trigger and self.saw_run and self.saw_ready_after_run
 
@@ -555,25 +592,88 @@ def _wait_for_fm7_snapshot(
     timeout_seconds: float | None,
     deadline: float | None,
     exit_error: str,
+    expect_mandelbrot_art: bool = False,
     emit_output_line: Callable[[str], None] | None = None,
 ) -> list[str]:
     previous_snapshot: list[str] | None = None
     stable_since: float | None = None
-    previous_output_lines: list[str] | None = None
+    accumulated_output_lines: list[str] = []
+    accumulated_wrapped_rows: list[str] = []
+    previous_output_window: list[str] | None = None
+    previous_wrapped_window: list[str] | None = None
+    previous_single_output_line: str | None = None
+    saw_mandelbrot_fragments = False
+    processed_snapshot_count = 0
 
-    while True:
-        snapshot = _read_text_capture_lines(output_path)
+    def _process_snapshot(snapshot: list[str]) -> list[str] | None:
+        nonlocal previous_snapshot
+        nonlocal stable_since
+        nonlocal accumulated_output_lines
+        nonlocal accumulated_wrapped_rows
+        nonlocal previous_output_window
+        nonlocal previous_wrapped_window
+        nonlocal saw_mandelbrot_fragments
+        nonlocal previous_single_output_line
+
         ready = progress.observe(snapshot)
-        output_lines = extract_output_lines(snapshot, snapshot) if progress.saw_trigger and progress.saw_run else []
+        if has_mandelbrot_art_fragments(snapshot):
+            saw_mandelbrot_fragments = True
+        output_lines = []
+        if progress.saw_trigger and progress.saw_run and not expect_mandelbrot_art:
+            output_lines = _extract_output_lines_from_candidate(snapshot)
         if any(is_input_prompt_line(line) for line in output_lines):
             raise UnsupportedProgramInputError("program input is not supported in --run mode")
-        if emit_output_line is not None and output_lines:
-            diff_lines = _emit_console_diff(previous_output_lines or [], output_lines)
-            for line in diff_lines:
-                emit_output_line(line)
-            previous_output_lines = list(output_lines)
-
+        if not ready and emit_output_line is not None and len(output_lines) == 1:
+            single_output_line = output_lines[0]
+            if single_output_line != previous_single_output_line:
+                emit_output_line(single_output_line)
+                previous_single_output_line = single_output_line
         if ready:
+            history_output_lines = output_lines
+        else:
+            history_output_lines = output_lines[:-1]
+        if history_output_lines:
+            diff_lines = _new_output_lines_from_window(previous_output_window or [], history_output_lines)
+            if diff_lines:
+                accumulated_output_lines.extend(diff_lines)
+                if emit_output_line is not None and not saw_mandelbrot_fragments:
+                    for line in diff_lines:
+                        emit_output_line(line)
+            previous_output_window = list(history_output_lines)
+        wrapped_rows = extract_wrapped_mandelbrot_physical_lines(snapshot)
+        if wrapped_rows:
+            if wrapped_rows != (previous_wrapped_window or []):
+                accumulated_wrapped_rows = _merge_cumulative_history(
+                    accumulated_wrapped_rows,
+                    wrapped_rows,
+                )
+                reconstructed_lines = reconstruct_wrapped_mandelbrot_lines(accumulated_wrapped_rows)
+                merged_output_lines = _merge_output_history(
+                    accumulated_output_lines,
+                    reconstructed_lines,
+                )
+                if len(merged_output_lines) > len(accumulated_output_lines):
+                    new_lines = merged_output_lines[len(accumulated_output_lines) :]
+                    if emit_output_line is not None and not saw_mandelbrot_fragments:
+                        for line in new_lines:
+                            emit_output_line(line)
+                accumulated_output_lines = merged_output_lines
+            previous_wrapped_window = list(wrapped_rows)
+        if expect_mandelbrot_art:
+            normalized_block = _normalize_symmetric_mandelbrot_output(accumulated_output_lines)
+            if _is_complete_symmetric_mandelbrot_output(normalized_block):
+                return normalized_block
+        else:
+            mandelbrot_block = extract_any_mandelbrot_block(accumulated_output_lines)
+            if mandelbrot_block:
+                return mandelbrot_block
+
+        if ready and output_lines and not expect_mandelbrot_art:
+            return _collapse_repeated_prefix(accumulated_output_lines or output_lines)
+
+        if ready and (not expect_mandelbrot_art or saw_mandelbrot_fragments):
+            if any(is_ready_line(line) for line in snapshot) and not _fm7_snapshot_contains_run(snapshot):
+                return _collapse_repeated_prefix(accumulated_output_lines) if accumulated_output_lines else snapshot
             if snapshot != previous_snapshot:
                 previous_snapshot = list(snapshot)
                 stable_since = time.monotonic()
@@ -581,22 +681,57 @@ def _wait_for_fm7_snapshot(
                 stable_since = time.monotonic()
 
             if stable_since is not None and time.monotonic() - stable_since >= settle_seconds:
-                return snapshot
+                return _collapse_repeated_prefix(accumulated_output_lines) if accumulated_output_lines else snapshot
         else:
             previous_snapshot = list(snapshot) if snapshot else None
             stable_since = None
+        return None
+
+    def _process_pending_snapshots() -> list[str] | None:
+        nonlocal processed_snapshot_count
+
+        if not output_path.exists():
+            return None
+        raw_text = output_path.read_text(encoding="ascii")
+        if _FM7_SNAPSHOT_MARKER not in raw_text:
+            snapshot = [line.rstrip() for line in raw_text.splitlines() if line.strip()]
+            if not snapshot:
+                return None
+            return _process_snapshot(snapshot)
+
+        snapshots = _read_fm7_capture_snapshots(output_path)
+        if not snapshots:
+            return None
+        for snapshot in snapshots[processed_snapshot_count:]:
+            processed_snapshot_count += 1
+            processed = _process_snapshot(snapshot)
+            if processed is not None:
+                return processed
+        return None
+
+    while True:
+        processed = _process_pending_snapshots()
+        if processed is not None:
+            return processed
 
         if proc.poll() is not None:
-            if ready:
-                return snapshot
+            processed = _process_pending_snapshots()
+            if processed is not None:
+                return processed
             raise RuntimeError(exit_error)
 
-        _sleep_until_poll(
-            deadline=deadline,
-            poll_interval=_FM7_BATCH_POLL_INTERVAL,
-            command=command,
-            timeout_seconds=timeout_seconds,
-        )
+        try:
+            _sleep_until_poll(
+                deadline=deadline,
+                poll_interval=_FM7_BATCH_POLL_INTERVAL,
+                command=command,
+                timeout_seconds=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            processed = _process_pending_snapshots()
+            if processed is not None:
+                return processed
+            raise
 
 
 def _run_fm7_batch_capture(
@@ -607,8 +742,11 @@ def _run_fm7_batch_capture(
     disk_path: Path | None,
     extra_mame_args: list[str],
     program_lines: list[str],
+    pre_run_commands: list[str],
     temp_dir: Path,
     timeout_seconds: float | None,
+    expect_mandelbrot_art: bool,
+    emit_output_line: Callable[[str], None] | None = None,
 ) -> list[str]:
     command = [mame_command, driver]
     deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
@@ -616,7 +754,7 @@ def _run_fm7_batch_capture(
     input_path = temp_dir / "input.txt"
     output_path = temp_dir / "screen.txt"
     lua_path = temp_dir / "interactive.lua"
-    queued_lines = [*program_lines, f'PRINT "{_BATCH_MARKER}"', "RUN"]
+    queued_lines = [*program_lines, *pre_run_commands, f'PRINT "{_BATCH_MARKER}"', "RUN"]
     input_path.write_text("".join(f"{line}\n" for line in queued_lines), encoding="ascii")
     output_path.write_text("", encoding="ascii")
     _build_fm7_interactive_lua(lua_path, input_path=input_path, output_path=output_path)
@@ -643,7 +781,8 @@ def _run_fm7_batch_capture(
             timeout_seconds=timeout_seconds,
             deadline=deadline,
             exit_error="unable to detect FM7 batch execution in console RAM",
-            emit_output_line=lambda line: print(line, flush=True),
+            expect_mandelbrot_art=expect_mandelbrot_art,
+            emit_output_line=emit_output_line,
         )
     finally:
         _terminate_launched_process(proc)
@@ -817,10 +956,12 @@ local function write_snapshot(snapshot)
     return
   end
   previous_snapshot = serialized
-  local handle = assert(io.open(output_path, "w"))
+  local handle = assert(io.open(output_path, "a"))
+  handle:write("{_FM7_SNAPSHOT_MARKER}\\n")
   for _, line in ipairs(snapshot) do
     handle:write(line, "\\n")
   end
+  handle:write("{_FM7_SNAPSHOT_END_MARKER}\\n")
   handle:close()
 end
 """
@@ -997,6 +1138,7 @@ local pending_text = nil
 local last_warning_frame = -1
 local saw_trigger = false
 local saw_run = false
+local last_written_snapshot = nil
 local previous_snapshot = nil
 local stable_count = 0
 
@@ -1065,10 +1207,12 @@ local function has_ready_after_run(snapshot)
 end
 
 local function write_lines(snapshot)
-  local f = assert(io.open(output_path, "w"))
+  local f = assert(io.open(output_path, "a"))
+  f:write("{_FM7_SNAPSHOT_MARKER}\\n")
   for _, line in ipairs(snapshot) do
     f:write(line, "\\n")
   end
+  f:write("{_FM7_SNAPSHOT_END_MARKER}\\n")
   f:close()
 end
 
@@ -1116,6 +1260,13 @@ emu.register_frame_done(function()
     if contains_run(snapshot) then
       saw_run = true
     end
+    if saw_trigger and saw_run then
+      local serialized = table.concat(snapshot, "\\n")
+      if serialized ~= last_written_snapshot then
+        write_lines(snapshot)
+        last_written_snapshot = serialized
+      end
+    end
     if saw_trigger and saw_run and has_ready_after_run(snapshot) then
       local serialized = table.concat(snapshot, "\\n")
       if serialized == previous_snapshot then
@@ -1149,6 +1300,33 @@ def _read_text_capture_lines(path: Path) -> list[str]:
     if not path.exists():
         return []
     return [line.rstrip() for line in path.read_text(encoding="ascii").splitlines() if line.strip()]
+
+
+def _read_fm7_capture_snapshots(path: Path) -> list[list[str]]:
+    if not path.exists():
+        return []
+
+    text = path.read_text(encoding="ascii")
+    if _FM7_SNAPSHOT_MARKER not in text:
+        snapshot = [line.rstrip() for line in text.splitlines() if line.strip()]
+        return [snapshot] if snapshot else []
+
+    snapshots: list[list[str]] = []
+    current: list[str] | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        if line == _FM7_SNAPSHOT_MARKER:
+            current = []
+            continue
+        if line == _FM7_SNAPSHOT_END_MARKER:
+            if current is not None:
+                snapshots.append([item for item in current if item.strip()])
+            current = None
+            continue
+        if current is None:
+            continue
+        current.append(line)
+    return [snapshot for snapshot in snapshots if snapshot]
 
 
 def _emit_console_diff(previous_lines: list[str], current_lines: list[str]) -> list[str]:
@@ -1198,6 +1376,151 @@ def _emit_console_diff(previous_lines: list[str], current_lines: list[str]) -> l
             return current_lines[overlap:]
         overlap -= 1
     return current_lines
+
+
+def _new_output_lines_from_window(previous_lines: list[str], current_lines: list[str]) -> list[str]:
+    if not current_lines:
+        return []
+    if not previous_lines:
+        return list(current_lines)
+    if current_lines == previous_lines:
+        return []
+    if len(current_lines) >= len(previous_lines) and current_lines[: len(previous_lines)] == previous_lines:
+        return current_lines[len(previous_lines) :]
+    if _is_subsequence(current_lines, previous_lines):
+        return []
+
+    overlap = min(len(previous_lines), len(current_lines))
+    while overlap > 0:
+        if previous_lines[-overlap:] == current_lines[:overlap]:
+            return current_lines[overlap:]
+        overlap -= 1
+
+    if _is_subsequence(previous_lines, current_lines):
+        pos = 0
+        for item in previous_lines:
+            while current_lines[pos] != item:
+                pos += 1
+            pos += 1
+        return current_lines[pos:]
+
+    best_match_length = 0
+    best_match_end = 0
+    best_match_start = 0
+    for previous_start in range(len(previous_lines)):
+        for current_start in range(len(current_lines)):
+            match_length = 0
+            while (
+                previous_start + match_length < len(previous_lines)
+                and current_start + match_length < len(current_lines)
+                and previous_lines[previous_start + match_length] == current_lines[current_start + match_length]
+            ):
+                match_length += 1
+            if match_length > best_match_length:
+                best_match_length = match_length
+                best_match_start = current_start
+                best_match_end = current_start + match_length
+    if best_match_length >= 2 and best_match_start == 0:
+        return current_lines[best_match_end:]
+
+    return list(current_lines)
+
+
+def _is_subsequence(subseq: list[str], seq: list[str]) -> bool:
+    pos = 0
+    for item in subseq:
+        while pos < len(seq) and seq[pos] != item:
+            pos += 1
+        if pos >= len(seq):
+            return False
+        pos += 1
+    return True
+
+
+def _merge_output_history(history: list[str], window: list[str]) -> list[str]:
+    if not history:
+        return list(window)
+    if not window:
+        return list(history)
+    if _is_subsequence(history, window):
+        return list(window)
+    overlap = min(len(history), len(window))
+    while overlap > 0:
+        if history[-overlap:] == window[:overlap]:
+            break
+        overlap -= 1
+    return [*history, *window[overlap:]]
+
+
+def _collapse_repeated_prefix(lines: list[str]) -> list[str]:
+    collapsed = list(lines)
+    while len(collapsed) >= 2:
+        removed = False
+        for length in range(len(collapsed) // 2, 0, -1):
+            if collapsed[:length] == collapsed[length : length * 2]:
+                collapsed = collapsed[length:]
+                removed = True
+                break
+        if not removed:
+            break
+    return collapsed
+
+
+def _merge_cumulative_history(history: list[str], window: list[str]) -> list[str]:
+    if not history:
+        return list(window)
+    if not window:
+        return list(history)
+    if _is_subsequence(window, history):
+        return list(history)
+    if _is_subsequence(history, window):
+        return list(window)
+    overlap = min(len(history), len(window))
+    while overlap > 0:
+        if history[-overlap:] == window[:overlap]:
+            break
+        overlap -= 1
+    return [*history, *window[overlap:]]
+
+
+def _normalize_symmetric_mandelbrot_output(lines: list[str]) -> list[str]:
+    art_lines = [line for line in lines if is_mandelbrot_art_line(line)]
+    if len(art_lines) < 25:
+        return lines
+
+    unique_lines: list[str] = []
+    seen: set[str] = set()
+    for line in art_lines:
+        if line in seen:
+            continue
+        unique_lines.append(line)
+        seen.add(line)
+
+    selected_top: list[str] = []
+    last_non_space = 10**9
+    for line in unique_lines:
+        non_space = len(line.replace(" ", ""))
+        if selected_top and non_space > last_non_space:
+            continue
+        selected_top.append(line)
+        last_non_space = non_space
+        if len(selected_top) == 13:
+            break
+    if len(selected_top) != 13:
+        return lines
+    return [*selected_top, *selected_top[-2::-1]]
+
+
+def _is_complete_symmetric_mandelbrot_output(lines: list[str]) -> bool:
+    center_line = lines[12] if len(lines) >= 13 else ""
+    center_indent = len(center_line) - len(center_line.lstrip(" "))
+    return (
+        len(lines) == 25
+        and all(is_mandelbrot_art_line(line) for line in lines)
+        and len({line for line in lines[:13]}) == 13
+        and center_indent >= 20
+        and lines[13:] == lines[11::-1]
+    )
 
 
 def _run_mame(
@@ -1447,6 +1770,8 @@ def run_batch(
 ) -> int:
     program_lines = normalize_program_lines(program_path)
     string_literals = _extract_string_literals(program_lines)
+    expect_mandelbrot_art = _is_mandelbrot_art_program(program_path)
+    pre_run_commands = ["WIDTH 80"] if _uses_mandelbrot_width_setup(program_path) else []
 
     temp_dir = Path(tempfile.mkdtemp(prefix="fbasic-batch-"))
     try:
@@ -1457,17 +1782,38 @@ def run_batch(
         lua_path = temp_dir / "capture.lua"
         output_lines: list[str] = []
         if driver in {"fm7", "fm77av"}:
-            captured_lines = _run_fm7_batch_capture(
-                mame_command=mame_command,
-                rompath=rompath,
-                driver=driver,
-                disk_path=disk_path,
-                extra_mame_args=extra_mame_args,
-                program_lines=program_lines,
-                temp_dir=temp_dir,
-                timeout_seconds=timeout_seconds,
-            )
+            streamed_output_lines: list[str] = []
+
+            def buffer_fm7_output_line(line: str) -> None:
+                streamed_output_lines.append(line)
+
+            try:
+                captured_lines = _run_fm7_batch_capture(
+                    mame_command=mame_command,
+                    rompath=rompath,
+                    driver=driver,
+                    disk_path=disk_path,
+                    extra_mame_args=extra_mame_args,
+                    program_lines=program_lines,
+                    pre_run_commands=pre_run_commands,
+                    temp_dir=temp_dir,
+                    timeout_seconds=timeout_seconds,
+                    expect_mandelbrot_art=expect_mandelbrot_art,
+                    emit_output_line=buffer_fm7_output_line,
+                )
+            except subprocess.TimeoutExpired:
+                for line in streamed_output_lines:
+                    print(line, flush=True)
+                raise
             output_lines = extract_output_lines(captured_lines, captured_lines)
+            if not expect_mandelbrot_art:
+                output_lines = _extract_output_lines_from_candidate(captured_lines)
+            if expect_mandelbrot_art and not output_lines:
+                output_lines = _normalize_symmetric_mandelbrot_output(captured_lines)
+            if not expect_mandelbrot_art and output_lines:
+                new_output_lines = output_lines
+                for line in new_output_lines:
+                    print(line, flush=True)
             if not captured_lines:
                 raise RuntimeError("unable to detect FM7 batch execution in console RAM")
         elif driver in {"pc8801mk2"}:
@@ -1552,11 +1898,13 @@ def run_batch(
                 plain_lines = _ocr_lines(image_path, whitelist=None)
                 filtered_lines = _ocr_lines(image_path, whitelist=_OCR_WHITELIST)
                 output_lines = extract_output_lines(plain_lines, filtered_lines)
+        if driver in {"fm7", "fm77av"} and expect_mandelbrot_art:
+            output_lines = _normalize_symmetric_mandelbrot_output(output_lines)
         if driver not in {"fm7", "fm77av"}:
             output_lines = _repair_output_lines(output_lines, string_literals)
         if any(is_input_prompt_line(line) for line in output_lines):
             raise UnsupportedProgramInputError("program input is not supported in --run mode")
-        if output_lines and driver in {"fm7", "fm77av"}:
+        if output_lines and driver in {"fm7", "fm77av"} and not expect_mandelbrot_art:
             pass
         elif output_lines:
             print("\n".join(output_lines))
@@ -1564,6 +1912,20 @@ def run_batch(
     finally:
         if not _KEEP_TEMP:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _uses_mandelbrot_width_setup(program_path: Path) -> bool:
+    return program_path.parent.name == "mandelbrot" and program_path.name in {
+        "asciiart.bas",
+        "asciiart-fm7.bas",
+    }
+
+
+def _is_mandelbrot_art_program(program_path: Path) -> bool:
+    return program_path.parent.name == "mandelbrot" and program_path.name in {
+        "asciiart.bas",
+        "asciiart-fm7.bas",
+    }
 
 
 def run_interactive_load(

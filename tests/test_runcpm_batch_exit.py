@@ -237,6 +237,35 @@ class RunCpmBatchExitTests(unittest.TestCase):
             self.assertEqual(result.stdout, "COMMON SAMPLE\nCOUNT 1\n")
             self.assertEqual(command_log.read_text(encoding="ascii"), "SYSTEM\nEXIT\n")
 
+    def test_basic80_output_filter_preserves_leading_spaces_in_program_output(self) -> None:
+        text = (
+            "RunCPM Version 6.9 (CCP-INTERNAL v3.3)\r\n"
+            "BASIC-85 Rev. 5.29\r\n"
+            "[CP/M Version]\r\n"
+            "39224 Bytes free\r\n"
+            "                                              864332221111111000000000000000000\r\n"
+            "Ok\r\n"
+            "SYSTEM\r\n"
+        )
+
+        self.assertEqual(
+            runcpm_batch_exit._filter_basic80_output(text),
+            "                                              864332221111111000000000000000000\n",
+        )
+
+    def test_basic80_output_filter_preserves_trailing_spaces_in_program_output(self) -> None:
+        text = (
+            "RunCPM Version 6.9 (CCP-INTERNAL v3.3)\r\n"
+            "BASIC-85 Rev. 5.29\r\n"
+            "[CP/M Version]\r\n"
+            "39224 Bytes free\r\n"
+            " 0 \r\n"
+            "Ok\r\n"
+            "SYSTEM\r\n"
+        )
+
+        self.assertEqual(runcpm_batch_exit._filter_basic80_output(text), " 0 \n")
+
     def test_aborts_and_terminates_child_when_parent_disappears(self) -> None:
         class FakeProc:
             def __init__(self) -> None:

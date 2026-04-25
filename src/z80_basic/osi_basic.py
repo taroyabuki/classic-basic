@@ -157,7 +157,7 @@ class StreamingFileRunOutput:
         self._flush_pending(final=True)
 
     def _finish_line(self) -> None:
-        text = self._line.decode("ascii", errors="replace").rstrip()
+        text = self._line.decode("ascii", errors="replace")
         self._line.clear()
         if not self._saw_run:
             if text.strip().upper() == "RUN":

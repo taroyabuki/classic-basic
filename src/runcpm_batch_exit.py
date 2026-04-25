@@ -211,7 +211,7 @@ def _filter_basic80_output(text: str) -> str:
     filtered: list[str] = []
     emitting = False
     for raw_line in lines:
-        line = raw_line.rstrip()
+        line = raw_line
         stripped = line.strip()
         if not stripped:
             continue
@@ -219,6 +219,8 @@ def _filter_basic80_output(text: str) -> str:
             if stripped == "Ok" or _BASIC80_STARTUP_RE.match(stripped):
                 continue
             emitting = True
+        if stripped == "Ok":
+            continue
         if _BASIC80_SHUTDOWN_RE.match(stripped):
             continue
         filtered.append(line)
@@ -254,11 +256,11 @@ class _Basic80StreamFilter:
         self._buffer += text.replace("\r\n", "\n").replace("\r", "\n")
         while "\n" in self._buffer:
             raw_line, self._buffer = self._buffer.split("\n", 1)
-            self._emit_line(raw_line.rstrip())
+            self._emit_line(raw_line)
 
     def finish(self) -> None:
         if self._buffer:
-            self._emit_line(self._buffer.rstrip())
+            self._emit_line(self._buffer)
             self._buffer = ""
 
     def _emit_line(self, line: str) -> None:
@@ -272,6 +274,8 @@ class _Basic80StreamFilter:
             if stripped == "Ok" or _BASIC80_STARTUP_RE.match(stripped):
                 return
             self._emitting = True
+        if stripped == "Ok":
+            return
         if _BASIC80_SHUTDOWN_RE.match(stripped):
             return
         sys.stdout.write(f"{line}\n")

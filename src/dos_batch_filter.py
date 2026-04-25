@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 import sys
 
+from mandelbrot_output import is_mandelbrot_art_line
+
 
 _CSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _OSC_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
@@ -71,29 +73,35 @@ def extract_clean_lines(text: str) -> list[str]:
 
     lines: list[str] = []
     for raw_line in text.splitlines():
-        line = _WHITESPACE_RE.sub(" ", raw_line).strip()
-        if not line:
+        line = raw_line.expandtabs(8).rstrip()
+        if not line.strip():
             continue
         line = "".join("\uFFFD" if 0xDC80 <= ord(char) <= 0xDCFF else char for char in line)
-        ready_match = _TRAILING_READY_NOISE_RE.match(line)
+        stripped = line.strip()
+        ready_match = _TRAILING_READY_NOISE_RE.match(stripped)
         if ready_match is not None:
             line = ready_match.group(1)
-        if _should_skip(line):
+            stripped = line
+        if _should_skip(line, stripped=stripped):
             continue
-        lines.append(line)
+        if is_mandelbrot_art_line(line):
+            lines.append(line)
+        else:
+            lines.append(_WHITESPACE_RE.sub(" ", line).strip())
     return lines
 
 
-def _should_skip(line: str) -> bool:
-    if _NOISE_RE.match(line):
+def _should_skip(line: str, *, stripped: str | None = None) -> bool:
+    stripped_line = line.strip() if stripped is None else stripped
+    if _NOISE_RE.match(stripped_line):
         return True
-    if "RUNFILE.BAS" in line or "Immediate" in line:
+    if "RUNFILE.BAS" in stripped_line or "Immediate" in stripped_line:
         return True
-    if line == "Ok":  # GW-BASIC / MSX-BASIC ready prompt
+    if stripped_line == "Ok":  # GW-BASIC / MSX-BASIC ready prompt
         return True
     if any(ch in line for ch in "┌┐└┘├┤│─░↑↓←→"):
         return True
-    if _BASIC_SOURCE_RE.match(line):
+    if _BASIC_SOURCE_RE.match(stripped_line):
         return True
     return False
 

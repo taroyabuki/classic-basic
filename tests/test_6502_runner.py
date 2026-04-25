@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 import pty
 import select
@@ -11,6 +12,8 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+
+from z80_basic.osi_basic import StreamingFileRunOutput
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -39,6 +42,15 @@ def _write_executable(path: Path, content: str) -> None:
 
 
 class Basic6502RunnerTests(unittest.TestCase):
+    def test_streaming_file_run_output_preserves_basic_numeric_padding(self) -> None:
+        stream = io.StringIO()
+        output = StreamingFileRunOutput(stream)
+
+        output.write(b"RUN\r 0 \r 0 \rOK\r")
+        output.finish()
+
+        self.assertEqual(stream.getvalue(), " 0 \n 0 \n")
+
     def test_no_args_starts_interactive_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)

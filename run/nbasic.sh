@@ -29,6 +29,8 @@ file_path=""
 run_program=0
 args=()
 explicit_rom=0
+explicit_cols=0
+explicit_vram_stride=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -52,6 +54,10 @@ while [[ $# -gt 0 ]]; do
     --rom|--entry-point|--max-steps|--max-rounds|--trace|--breakpoint|--system-input-value|--show-state|--show-ports|--show-port-summary|--show-vram|--show-vram-summary|--port-log-limit|--summary-limit|--vram-start|--vram-stride|--vram-cell-width|--rows|--cols)
       if [[ "$1" == "--rom" ]]; then
         explicit_rom=1
+      elif [[ "$1" == "--cols" ]]; then
+        explicit_cols=1
+      elif [[ "$1" == "--vram-stride" ]]; then
+        explicit_vram_stride=1
       fi
       args+=("$1")
       shift
@@ -94,6 +100,12 @@ fi
 
 if [[ -n "${file_path}" ]]; then
   if [[ "${run_program}" == "1" ]]; then
+    if [[ "${explicit_cols}" != "1" ]]; then
+      args+=(--cols 80)
+    fi
+    if [[ "${explicit_vram_stride}" != "1" ]]; then
+      args+=(--vram-stride 0xA0)
+    fi
     args+=("${file_path}")
   else
     args+=(--interactive "${file_path}")

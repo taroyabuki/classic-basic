@@ -301,8 +301,7 @@ class FidelityAuditTests(unittest.TestCase):
     def test_basic80_pi_probe(self) -> None:
         result = _run(["bash", "run/basic80.sh", "--run", "--file", str(TEST_DATA_DIR / "basic80_pi_probe.bas")])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("BASIC-85 Rev. 5.29", result.stdout)
-        self.assertIn("194  104  33  162  218  15  73  130", result.stdout)
+        self.assertIn("194  104  33  162  218  15  73  130 ", result.stdout)
         self.assertIn("\n 0 \n", result.stdout)
 
 
@@ -311,7 +310,6 @@ class FidelityAuditTests(unittest.TestCase):
             self.skipTest("grantsbasic runtime is not installed")
         result = _run(["bash", "run/grantsbasic.sh", "--run", "--file", "demo/grantsbasic.bas"], timeout=90)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Z80 BASIC Ver 4.7b", result.stdout)
         self.assertIn("HELLO, WORLD", result.stdout)
         self.assertIn("INTEGER 14", result.stdout)
         self.assertIn("PI 3.14159", result.stdout)

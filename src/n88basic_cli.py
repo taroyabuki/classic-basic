@@ -15,6 +15,7 @@ from pathlib import Path
 from collections.abc import Callable
 
 import fbasic_batch
+from mandelbrot_output import extract_any_mandelbrot_block, has_mandelbrot_art_fragments
 import n88basic_program_check
 from run_control_bridge import (
     RUN_ERR_FILE_NOT_FOUND,
@@ -31,6 +32,22 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_QUASI88_BIN = _PROJECT_ROOT / "vendor" / "quasi88" / "quasi88.sdl2"
 _DEFAULT_ROM_DIR = _PROJECT_ROOT / "downloads" / "n88basic" / "roms"
 _FUNCTION_KEY_GUIDE = 'load "        auto          go to         list          run'
+_PROGRAM_LOAD_READY_TIMEOUT = 10.0
+_SOURCE_LISTING_KEYWORDS = (
+    "PRINT",
+    "FOR",
+    "NEXT",
+    "IF",
+    "THEN",
+    "GOTO",
+    "GOSUB",
+    "RETURN",
+    "REM",
+    "DEF",
+    "DIM",
+    "END",
+    "WIDTH",
+)
 _REQUIRED_ROM_ALIASES: tuple[tuple[str, ...], ...] = (
     ("N88.ROM", "n88.rom"),
     ("N88EXT0.ROM", "n88ext0.rom", "N88_0.ROM", "n88_0.rom"),
@@ -54,6 +71,33 @@ def _screen_suffix(previous_lines: list[str], current_lines: list[str]) -> list[
             if previous_lines[start : start + prefix_length] == prefix:
                 return current_lines[prefix_length:]
     return current_lines
+
+
+def _is_subsequence(subseq: list[str], seq: list[str]) -> bool:
+    if not subseq:
+        return True
+    pos = 0
+    for item in subseq:
+        while pos < len(seq) and seq[pos] != item:
+            pos += 1
+        if pos >= len(seq):
+            return False
+        pos += 1
+    return True
+
+
+def _merge_cumulative_output_history(history: list[str], current_lines: list[str]) -> list[str]:
+    if not history:
+        return list(current_lines)
+    if not current_lines:
+        return list(history)
+    if history == current_lines or _is_subsequence(current_lines, history):
+        return list(history)
+    max_overlap = min(len(history), len(current_lines))
+    for overlap in range(max_overlap, -1, -1):
+        if history[-overlap:] == current_lines[:overlap]:
+            return [*history, *current_lines[overlap:]]
+    return [*history, *current_lines]
 
 
 def _resolve_quasi88_bin() -> Path:
@@ -92,6 +136,18 @@ def _load_program_source_lines(path: Path) -> list[str]:
     if not lines:
         raise ValueError("no executable code found in file")
     return lines
+
+
+def _looks_like_source_listing_line(text: str) -> bool:
+    match = re.match(r"^\s*(\d+)(?:\s+(.*))?$", text)
+    if match is None:
+        return False
+    body = (match.group(2) or "").upper()
+    if not body:
+        return False
+    if any(keyword in body for keyword in _SOURCE_LISTING_KEYWORDS):
+        return True
+    return any(token in body for token in ("=", "+", "-", "*", "/", "(", ")", ":", "<", ">", '"', "$"))
 
 
 class N88BasicCLI:
@@ -137,7 +193,7 @@ class N88BasicCLI:
         env["SDL_AUDIODRIVER"] = "dummy"
         env["N88BASIC_BRIDGE_ONLY"] = "1"
         env["N88BASIC_CONTROL_SOCKET"] = self._ensure_control_socket_path()
-        self._start_quasi88_process(self._quasi88_command(), env)
+        self._start_quasi88_process([*self._quasi88_command(), "-nowait", "-hsbasic"], env)
 
     def _start_quasi88_process(self, command: list[str], env: dict[str, str]) -> None:
         self.quasi88_proc = subprocess.Popen(
@@ -491,13 +547,24 @@ class N88BasicCLI:
         return stripped.startswith('save "') or stripped.startswith('load "')
 
     def _screen_has_basic_ready(self, screen_lines: list[str]) -> bool:
-        return any(line.strip().lower() == "ok" for line in screen_lines)
+        return bool(screen_lines) and screen_lines[-1].strip().lower() == "ok"
 
     def _wait_for_basic_ready(self, session: RunControlSession, *, startup_timeout: float) -> bool:
         deadline = time.monotonic() + startup_timeout
+        last_lines: list[str] | None = None
+        stable_ready_polls = 0
         while time.monotonic() < deadline:
-            if self._screen_has_basic_ready(self._capture_interactive_screen_lines(session)):
-                return True
+            lines = self._capture_interactive_screen_lines(session)
+            if self._screen_has_basic_ready(lines):
+                if last_lines == lines:
+                    stable_ready_polls += 1
+                else:
+                    stable_ready_polls = 1
+                if stable_ready_polls >= 2:
+                    return True
+            else:
+                stable_ready_polls = 0
+            last_lines = list(lines)
             session.wait(100)
             time.sleep(0.05)
         return False
@@ -520,24 +587,45 @@ class N88BasicCLI:
         previous_lines: list[str],
         *,
         timeout: float,
+        entered_line: str | None = None,
     ) -> list[str] | None:
         deadline = time.monotonic() + timeout
+        started = time.monotonic()
         saw_change = False
         last_lines: list[str] | None = None
         stable_ready_polls = 0
+        entered_line_stable_since: float | None = None
+        expected_entered_line = entered_line.rstrip() if entered_line is not None else None
         while time.monotonic() < deadline:
             lines = self._capture_interactive_screen_lines(session)
             if lines != previous_lines:
                 saw_change = True
-            if saw_change and self._screen_has_basic_ready(lines):
+            if self._screen_has_basic_ready(lines):
                 if last_lines == lines:
                     stable_ready_polls += 1
                 else:
                     stable_ready_polls = 1
-                if stable_ready_polls >= 2:
+                # Long source loads can advance offscreen while the visible Ready
+                # prompt remains unchanged. Accept a stable ready screen after a
+                # short grace period even without a visible delta.
+                if stable_ready_polls >= 2 and (saw_change or time.monotonic() - started >= 0.5):
                     return lines
             else:
                 stable_ready_polls = 0
+            if (
+                expected_entered_line is not None
+                and saw_change
+                and any(line.rstrip() == expected_entered_line for line in lines)
+            ):
+                if last_lines == lines:
+                    if entered_line_stable_since is None:
+                        entered_line_stable_since = time.monotonic()
+                    elif time.monotonic() - entered_line_stable_since >= 0.8:
+                        return lines
+                else:
+                    entered_line_stable_since = time.monotonic()
+            else:
+                entered_line_stable_since = None
             last_lines = list(lines)
             session.wait(100)
             time.sleep(0.05)
@@ -552,18 +640,42 @@ class N88BasicCLI:
     ) -> tuple[bool, int]:
         previous_lines = self._capture_interactive_screen_lines(session)
         for line in program_lines:
-            ok, response = session.queue(f"{line}<CR>")
+            ok, response = self._queue_with_retry(
+                session,
+                f"{line}<CR>",
+                retry_timeout=ready_timeout,
+            )
             if not ok:
                 return False, int(response.get("code", RUN_ERR_PROTOCOL))
             current_lines = self._wait_for_screen_change_and_ready(
                 session,
                 previous_lines,
                 timeout=ready_timeout,
+                entered_line=line,
             )
             if current_lines is None:
                 return False, RUN_ERR_TIMEOUT
             previous_lines = current_lines
         return True, RUN_ERR_OK
+
+    def _queue_with_retry(
+        self,
+        session: RunControlSession,
+        sequence: str,
+        *,
+        retry_timeout: float,
+    ) -> tuple[bool, dict[str, int]]:
+        deadline = time.monotonic() + retry_timeout
+        while True:
+            ok, response = session.queue(sequence)
+            if ok:
+                return ok, response
+            if int(response.get("code", RUN_ERR_PROTOCOL)) != RUN_ERR_QUEUE_FULL:
+                return ok, response
+            if time.monotonic() >= deadline:
+                return ok, response
+            session.wait(50)
+            time.sleep(0.05)
 
     def _load_program_with_fallback(
         self,
@@ -583,9 +695,6 @@ class N88BasicCLI:
             return True, RUN_ERR_OK
 
         code = int(response.get("code", RUN_ERR_PROTOCOL))
-        if code == RUN_ERR_FILE_NOT_FOUND:
-            return False, code
-
         program_lines = _load_program_source_lines(Path(filepath))
         return self._queue_program_lines(
             session,
@@ -615,7 +724,7 @@ class N88BasicCLI:
             ok, _ = self._load_program_with_fallback(
                 session,
                 filepath=filepath,
-                ready_timeout=2.0,
+                ready_timeout=_PROGRAM_LOAD_READY_TIMEOUT,
                 wait_for_ready_after_ascii_load=True,
             )
             if not ok:
@@ -713,28 +822,46 @@ class N88BasicCLI:
         session: RunControlSession,
         *,
         saw_run_prompt: bool = False,
+        baseline_lines: list[str] | None = None,
     ) -> dict[str, object]:
         lines: list[str] = []
         for raw_line in self._capture_run_screen_lines(session):
-            normalized = raw_line.replace("\ufffd", "").strip()
-            if normalized:
+            normalized = raw_line.replace("\ufffd", "")
+            if normalized.strip():
                 lines.append(normalized)
+        art_block = extract_any_mandelbrot_block(lines)
         run_index = None
         for index, line in enumerate(lines):
             if line.lower() == "run":
                 run_index = index
         saw_run_prompt = saw_run_prompt or run_index is not None
         if run_index is None:
-            post_run = list(lines) if saw_run_prompt else []
+            if saw_run_prompt and baseline_lines is not None:
+                post_run = _screen_suffix(baseline_lines, lines)
+            else:
+                post_run = list(lines) if saw_run_prompt else []
         else:
             post_run = lines[run_index + 1 :]
-        completed = saw_run_prompt and bool(post_run) and post_run[-1].lower() == "ok"
-        output_lines = post_run[:-1] if completed else post_run
+        candidate_output_lines = post_run[:-1] if post_run and post_run[-1].lower() == "ok" else post_run
+        completed = (
+            saw_run_prompt
+            and bool(post_run)
+            and post_run[-1].lower() == "ok"
+            and (run_index is not None or bool(candidate_output_lines))
+        )
+        raw_output_lines = post_run[:-1] if completed else post_run
+        output_lines = [
+            line
+            for line in raw_output_lines
+            if line.lower() != "ok" and not _looks_like_source_listing_line(line)
+        ]
         return {
             "lines": lines,
             "output_lines": output_lines,
             "completed": completed,
             "saw_run_prompt": saw_run_prompt,
+            "art_block": art_block,
+            "art_fragments": has_mandelbrot_art_fragments(lines),
         }
 
     def _drive_run_startup(self, session: RunControlSession, *, startup_timeout: float) -> bool:
@@ -753,16 +880,55 @@ class N88BasicCLI:
         session: RunControlSession,
         *,
         timeout_seconds: float | None,
+        saw_run_prompt: bool = False,
+        baseline_lines: list[str] | None = None,
         emit_output: Callable[[list[str]], None] | None = None,
     ) -> tuple[bool, list[str]]:
         deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
         last_state: dict[str, object] = {"lines": [], "output_lines": [], "completed": False}
         accumulated_output: list[str] = []
-        saw_run_prompt = False
+        pending_art_block: list[str] = []
+        mandelbrot_history_lines: list[str] = []
+        stable_art_polls = 0
         while deadline is None or time.monotonic() < deadline:
             session.wait(200)
-            last_state = self._capture_run_screen_state(session, saw_run_prompt=saw_run_prompt)
+            last_state = self._capture_run_screen_state(
+                session,
+                saw_run_prompt=saw_run_prompt,
+                baseline_lines=baseline_lines,
+            )
             saw_run_prompt = bool(last_state.get("saw_run_prompt", saw_run_prompt))
+            art_block = list(last_state.get("art_block", []))
+            if art_block:
+                if art_block == pending_art_block:
+                    stable_art_polls += 1
+                else:
+                    pending_art_block = art_block
+                    stable_art_polls = 0
+                if stable_art_polls >= 1 or bool(last_state["completed"]):
+                    if emit_output is not None:
+                        emit_output(art_block)
+                    return True, art_block
+                time.sleep(0.2)
+                continue
+            if bool(last_state.get("art_fragments")):
+                mandelbrot_history_lines = _merge_cumulative_output_history(
+                    mandelbrot_history_lines,
+                    list(last_state["lines"]),
+                )
+                history_art_block = extract_any_mandelbrot_block(mandelbrot_history_lines)
+                if history_art_block:
+                    if history_art_block == pending_art_block:
+                        stable_art_polls += 1
+                    else:
+                        pending_art_block = history_art_block
+                        stable_art_polls = 0
+                    if stable_art_polls >= 1 or bool(last_state["completed"]):
+                        if emit_output is not None:
+                            emit_output(history_art_block)
+                        return True, history_art_block
+                time.sleep(0.2)
+                continue
             current_output_lines = list(last_state["output_lines"])
             # While the program is still running, the final visible line may still be
             # in-flight and get replaced by its completed form on the next poll.
@@ -786,6 +952,12 @@ class N88BasicCLI:
             sys.stdout.write("\n".join(lines) + "\n")
             sys.stdout.flush()
 
+    def _pre_run_commands(self, filepath: str) -> list[str]:
+        path = Path(filepath)
+        if path.parent.name == "mandelbrot" and path.name == "asciiart.bas":
+            return ["WIDTH 80"]
+        return []
+
     def _run_via_bridge(
         self,
         session: RunControlSession,
@@ -805,19 +977,39 @@ class N88BasicCLI:
         ok, response = self._load_program_with_fallback(
             session,
             filepath=filepath,
-            ready_timeout=2.0,
+            ready_timeout=_PROGRAM_LOAD_READY_TIMEOUT,
             wait_for_ready_after_ascii_load=False,
         )
         if not ok:
             print("error: failed to load BASIC file", file=sys.stderr)
             return int(response)
-        ok, response = session.queue("RUN<CR>")
+        retry_timeout = max(timeout_seconds or 0.0, 5.0) if timeout_seconds is not None else 5.0
+        for command in self._pre_run_commands(filepath):
+            ok, response = self._queue_with_retry(
+                session,
+                f"{command}<CR>",
+                retry_timeout=retry_timeout,
+            )
+            if not ok:
+                print(f"error: failed to queue {command} command", file=sys.stderr)
+                return int(response.get("code", RUN_ERR_PROTOCOL))
+            if not self._wait_for_basic_ready(session, startup_timeout=retry_timeout):
+                print("error: n88basic batch run timed out", file=sys.stderr)
+                return RUN_ERR_TIMEOUT
+        baseline_lines = self._capture_run_screen_lines(session)
+        ok, response = self._queue_with_retry(
+            session,
+            "RUN<CR>",
+            retry_timeout=retry_timeout,
+        )
         if not ok:
             print("error: failed to queue RUN command", file=sys.stderr)
             return int(response.get("code", RUN_ERR_PROTOCOL))
         completed, output_lines = self._poll_run_completion(
             session,
             timeout_seconds=timeout_seconds,
+            saw_run_prompt=True,
+            baseline_lines=baseline_lines,
             emit_output=self._emit_run_stdout,
         )
         if completed:

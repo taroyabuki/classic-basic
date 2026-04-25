@@ -21,7 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-steps",
         type=int,
-        default=int(os.environ.get("GRANTS_BASIC_MAX_STEPS", "200000")),
+        default=int(os.environ.get("GRANTS_BASIC_MAX_STEPS", "50000")),
         help="Instruction budget per execution slice",
     )
     parser.add_argument(

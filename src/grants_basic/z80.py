@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 from .memory import Memory
+
+
+_EVEN_PARITY = tuple(((value & 0xFF).bit_count() % 2) == 0 for value in range(256))
+_DATACLASS_SLOTS: dict[str, bool] = {"slots": True} if sys.version_info >= (3, 10) else {}
 
 
 class UnsupportedInstruction(RuntimeError):
     pass
 
 
-@dataclass(slots=True)
+@dataclass(**_DATACLASS_SLOTS)
 class ExecutionResult:
     reason: str
     steps: int
@@ -25,8 +30,51 @@ class PortDevice:
 
 
 class Z80CPU:
+    __slots__ = (
+        "memory",
+        "_mem_data",
+        "_mem_rom_mask",
+        "ports",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "h",
+        "l",
+        "alt_a",
+        "alt_b",
+        "alt_c",
+        "alt_d",
+        "alt_e",
+        "alt_h",
+        "alt_l",
+        "pc",
+        "sp",
+        "ix",
+        "iy",
+        "i",
+        "r",
+        "interrupt_mode",
+        "iff1",
+        "iff2",
+        "halted",
+        "zero",
+        "carry",
+        "parity_even",
+        "sign",
+        "alt_zero",
+        "alt_carry",
+        "alt_parity_even",
+        "alt_sign",
+        "trace",
+        "_ei_pending",
+    )
+
     def __init__(self, memory: Memory, entry_point: int = 0x0000, ports: PortDevice | None = None) -> None:
         self.memory = memory
+        self._mem_data = memory._data
+        self._mem_rom_mask = memory._rom_mask
         self.ports = ports or PortDevice()
         self.a = 0
         self.b = 0
@@ -93,8 +141,26 @@ class Z80CPU:
     def reset(self, entry_point: int = 0x0000) -> None:
         self.__init__(self.memory, entry_point=entry_point, ports=self.ports)
 
+    def _read_byte(self, address: int) -> int:
+        return self._mem_data[address & 0xFFFF]
+
+    def _write_byte(self, address: int, value: int) -> None:
+        index = address & 0xFFFF
+        if self._mem_rom_mask[index]:
+            return
+        self._mem_data[index] = value & 0xFF
+
+    def _read_word(self, address: int) -> int:
+        index = address & 0xFFFF
+        next_index = (index + 1) & 0xFFFF
+        return self._mem_data[index] | (self._mem_data[next_index] << 8)
+
+    def _write_word(self, address: int, value: int) -> None:
+        self._write_byte(address, value)
+        self._write_byte(address + 1, value >> 8)
+
     def read_next_byte(self) -> int:
-        value = self.memory.read_byte(self.pc)
+        value = self._mem_data[self.pc]
         self.pc = (self.pc + 1) & 0xFFFF
         self.r = (self.r + 1) & 0x7F
         return value
@@ -106,14 +172,14 @@ class Z80CPU:
 
     def push_word(self, value: int) -> None:
         self.sp = (self.sp - 1) & 0xFFFF
-        self.memory.write_byte(self.sp, (value >> 8) & 0xFF)
+        self._write_byte(self.sp, (value >> 8) & 0xFF)
         self.sp = (self.sp - 1) & 0xFFFF
-        self.memory.write_byte(self.sp, value & 0xFF)
+        self._write_byte(self.sp, value & 0xFF)
 
     def pop_word(self) -> int:
-        low = self.memory.read_byte(self.sp)
+        low = self._read_byte(self.sp)
         self.sp = (self.sp + 1) & 0xFFFF
-        high = self.memory.read_byte(self.sp)
+        high = self._read_byte(self.sp)
         self.sp = (self.sp + 1) & 0xFFFF
         return low | (high << 8)
 
@@ -124,7 +190,7 @@ class Z80CPU:
         if self.interrupt_mode == 2:
             vector = ((self.i << 8) | 0xFF) & 0xFFFF
             self.push_word(self.pc)
-            self.pc = self.memory.read_word(vector)
+            self.pc = self._read_word(vector)
             return
         self.push_word(self.pc)
         self.pc = 0x0038
@@ -133,14 +199,16 @@ class Z80CPU:
         if self.trace:
             self._trace_state()
         activate_ei = self._ei_pending
-        opcode = self.read_next_byte()
+        opcode = self._mem_data[self.pc]
+        self.pc = (self.pc + 1) & 0xFFFF
+        self.r = (self.r + 1) & 0x7F
 
         if opcode == 0x00:
             pass
         elif opcode == 0x01:
             self.bc = self.read_next_word()
         elif opcode == 0x02:
-            self.memory.write_byte(self.bc, self.a)
+            self._write_byte(self.bc, self.a)
         elif opcode == 0x03:
             self.bc = (self.bc + 1) & 0xFFFF
         elif opcode == 0x04:
@@ -161,7 +229,7 @@ class Z80CPU:
         elif opcode == 0x09:
             self.hl = self._add16(self.hl, self.bc)
         elif opcode == 0x0A:
-            self.a = self.memory.read_byte(self.bc)
+            self.a = self._read_byte(self.bc)
         elif opcode == 0x0B:
             self.bc = (self.bc - 1) & 0xFFFF
         elif opcode == 0x0C:
@@ -181,7 +249,7 @@ class Z80CPU:
         elif opcode == 0x11:
             self.de = self.read_next_word()
         elif opcode == 0x12:
-            self.memory.write_byte(self.de, self.a)
+            self._write_byte(self.de, self.a)
         elif opcode == 0x13:
             self.de = (self.de + 1) & 0xFFFF
         elif opcode == 0x14:
@@ -199,7 +267,7 @@ class Z80CPU:
         elif opcode == 0x19:
             self.hl = self._add16(self.hl, self.de)
         elif opcode == 0x1A:
-            self.a = self.memory.read_byte(self.de)
+            self.a = self._read_byte(self.de)
         elif opcode == 0x1B:
             self.de = (self.de - 1) & 0xFFFF
         elif opcode == 0x1C:
@@ -219,7 +287,7 @@ class Z80CPU:
         elif opcode == 0x21:
             self.hl = self.read_next_word()
         elif opcode == 0x22:
-            self.memory.write_word(self.read_next_word(), self.hl)
+            self._write_word(self.read_next_word(), self.hl)
         elif opcode == 0x23:
             self.hl = (self.hl + 1) & 0xFFFF
         elif opcode == 0x24:
@@ -237,7 +305,7 @@ class Z80CPU:
         elif opcode == 0x29:
             self.hl = self._add16(self.hl, self.hl)
         elif opcode == 0x2A:
-            self.hl = self.memory.read_word(self.read_next_word())
+            self.hl = self._read_word(self.read_next_word())
         elif opcode == 0x2B:
             self.hl = (self.hl - 1) & 0xFFFF
         elif opcode == 0x2C:
@@ -256,15 +324,15 @@ class Z80CPU:
         elif opcode == 0x31:
             self.sp = self.read_next_word()
         elif opcode == 0x32:
-            self.memory.write_byte(self.read_next_word(), self.a)
+            self._write_byte(self.read_next_word(), self.a)
         elif opcode == 0x33:
             self.sp = (self.sp + 1) & 0xFFFF
         elif opcode == 0x34:
-            self.memory.write_byte(self.hl, self._inc8(self.memory.read_byte(self.hl)))
+            self._write_byte(self.hl, self._inc8(self._read_byte(self.hl)))
         elif opcode == 0x35:
-            self.memory.write_byte(self.hl, self._dec8(self.memory.read_byte(self.hl)))
+            self._write_byte(self.hl, self._dec8(self._read_byte(self.hl)))
         elif opcode == 0x36:
-            self.memory.write_byte(self.hl, self.read_next_byte())
+            self._write_byte(self.hl, self.read_next_byte())
         elif opcode == 0x37:
             self.carry = True
         elif opcode == 0x38:
@@ -274,7 +342,7 @@ class Z80CPU:
         elif opcode == 0x39:
             self.hl = self._add16(self.hl, self.sp)
         elif opcode == 0x3A:
-            self.a = self.memory.read_byte(self.read_next_word())
+            self.a = self._read_byte(self.read_next_word())
         elif opcode == 0x3B:
             self.sp = (self.sp - 1) & 0xFFFF
         elif opcode == 0x3C:
@@ -422,8 +490,8 @@ class Z80CPU:
             if not self.parity_even:
                 self.pc = address
         elif opcode == 0xE3:
-            value = self.memory.read_word(self.sp)
-            self.memory.write_word(self.sp, self.hl)
+            value = self._read_word(self.sp)
+            self._write_word(self.sp, self.hl)
             self.hl = value
         elif opcode == 0xE4:
             address = self.read_next_word()
@@ -534,7 +602,9 @@ class Z80CPU:
             self._ei_pending = False
 
     def _read_signed_byte(self) -> int:
-        value = self.read_next_byte()
+        value = self._mem_data[self.pc]
+        self.pc = (self.pc + 1) & 0xFFFF
+        self.r = (self.r + 1) & 0x7F
         return value - 0x100 if value & 0x80 else value
 
     def _inc8(self, value: int) -> int:
@@ -580,7 +650,7 @@ class Z80CPU:
 
     @staticmethod
     def _even_parity(value: int) -> bool:
-        return (value & 0xFF).bit_count() % 2 == 0
+        return _EVEN_PARITY[value & 0xFF]
 
     def _read_reg(self, code: int) -> int:
         if code == 0:
@@ -596,7 +666,7 @@ class Z80CPU:
         if code == 5:
             return self.l
         if code == 6:
-            return self.memory.read_byte(self.hl)
+            return self._read_byte(self.hl)
         return self.a
 
     def _write_reg(self, code: int, value: int) -> None:
@@ -620,7 +690,7 @@ class Z80CPU:
             self.l = value
             return
         if code == 6:
-            self.memory.write_byte(self.hl, value)
+            self._write_byte(self.hl, value)
             return
         self.a = value
 
@@ -644,7 +714,9 @@ class Z80CPU:
         self.parity_even = self._even_parity(self.a)
 
     def _step_cb(self) -> None:
-        opcode = self.read_next_byte()
+        opcode = self._mem_data[self.pc]
+        self.pc = (self.pc + 1) & 0xFFFF
+        self.r = (self.r + 1) & 0x7F
         reg = opcode & 0x07
         value = self._read_reg(reg)
         group = opcode >> 6
@@ -696,7 +768,9 @@ class Z80CPU:
 
     def _step_xp(self, is_iy: bool) -> None:
         xp = self.iy if is_iy else self.ix
-        opcode = self.read_next_byte()
+        opcode = self._mem_data[self.pc]
+        self.pc = (self.pc + 1) & 0xFFFF
+        self.r = (self.r + 1) & 0x7F
 
         def xp_disp() -> int:
             displacement = self.read_next_byte()
@@ -710,17 +784,17 @@ class Z80CPU:
                 self.ix = value
 
         def read_xp_d() -> int:
-            return self.memory.read_byte((xp + xp_disp()) & 0xFFFF)
+            return self._read_byte((xp + xp_disp()) & 0xFFFF)
 
         def write_xp_d(displacement: int, value: int) -> None:
-            self.memory.write_byte((xp + displacement) & 0xFFFF, value & 0xFF)
+            self._write_byte((xp + displacement) & 0xFFFF, value & 0xFF)
 
         if opcode == 0x21:
             set_xp(self.read_next_word())
         elif opcode == 0x22:
-            self.memory.write_word(self.read_next_word(), xp)
+            self._write_word(self.read_next_word(), xp)
         elif opcode == 0x2A:
-            set_xp(self.memory.read_word(self.read_next_word()))
+            set_xp(self._read_word(self.read_next_word()))
         elif opcode == 0x23:
             set_xp(xp + 1)
         elif opcode == 0x2B:
@@ -746,8 +820,8 @@ class Z80CPU:
         elif opcode == 0xE5:
             self.push_word(xp)
         elif opcode == 0xE3:
-            tmp = self.memory.read_word(self.sp)
-            self.memory.write_word(self.sp, xp)
+            tmp = self._read_word(self.sp)
+            self._write_word(self.sp, xp)
             set_xp(tmp)
         elif opcode == 0xE9:
             self.pc = xp
@@ -756,14 +830,14 @@ class Z80CPU:
         elif opcode == 0x34:
             displacement = xp_disp()
             addr = (xp + displacement) & 0xFFFF
-            self.memory.write_byte(addr, self._inc8(self.memory.read_byte(addr)))
+            self._write_byte(addr, self._inc8(self._read_byte(addr)))
         elif opcode == 0x35:
             displacement = xp_disp()
             addr = (xp + displacement) & 0xFFFF
-            self.memory.write_byte(addr, self._dec8(self.memory.read_byte(addr)))
+            self._write_byte(addr, self._dec8(self._read_byte(addr)))
         elif opcode == 0x36:
             displacement = xp_disp()
-            self.memory.write_byte((xp + displacement) & 0xFFFF, self.read_next_byte())
+            self._write_byte((xp + displacement) & 0xFFFF, self.read_next_byte())
         elif opcode == 0x46:
             self.b = read_xp_d()
         elif opcode == 0x4E:
@@ -816,7 +890,9 @@ class Z80CPU:
             self.sign = ((self.a - value) & 0x80) != 0
 
     def _step_ed(self) -> None:
-        opcode = self.read_next_byte()
+        opcode = self._mem_data[self.pc]
+        self.pc = (self.pc + 1) & 0xFFFF
+        self.r = (self.r + 1) & 0x7F
         if opcode in (0x46, 0x4E, 0x66, 0x6E):
             self.interrupt_mode = 0
             return
@@ -883,22 +959,22 @@ class Z80CPU:
             self.sign = bool(self.hl & 0x8000)
             return
         if opcode == 0x43:
-            self.memory.write_word(self.read_next_word(), self.bc)
+            self._write_word(self.read_next_word(), self.bc)
             return
         if opcode == 0x4B:
-            self.bc = self.memory.read_word(self.read_next_word())
+            self.bc = self._read_word(self.read_next_word())
             return
         if opcode == 0x53:
-            self.memory.write_word(self.read_next_word(), self.de)
+            self._write_word(self.read_next_word(), self.de)
             return
         if opcode == 0x5B:
-            self.de = self.memory.read_word(self.read_next_word())
+            self.de = self._read_word(self.read_next_word())
             return
         if opcode == 0x73:
-            self.memory.write_word(self.read_next_word(), self.sp)
+            self._write_word(self.read_next_word(), self.sp)
             return
         if opcode == 0x7B:
-            self.sp = self.memory.read_word(self.read_next_word())
+            self.sp = self._read_word(self.read_next_word())
             return
         if opcode == 0xA0:
             self._ldi()
@@ -939,32 +1015,32 @@ class Z80CPU:
             return
 
     def _ldi(self) -> None:
-        self.memory.write_byte(self.de, self.memory.read_byte(self.hl))
+        self._write_byte(self.de, self._read_byte(self.hl))
         self.hl = (self.hl + 1) & 0xFFFF
         self.de = (self.de + 1) & 0xFFFF
         self.bc = (self.bc - 1) & 0xFFFF
 
     def _ldd(self) -> None:
-        self.memory.write_byte(self.de, self.memory.read_byte(self.hl))
+        self._write_byte(self.de, self._read_byte(self.hl))
         self.hl = (self.hl - 1) & 0xFFFF
         self.de = (self.de - 1) & 0xFFFF
         self.bc = (self.bc - 1) & 0xFFFF
 
     def _cpi(self) -> None:
-        value = self.memory.read_byte(self.hl)
+        value = self._read_byte(self.hl)
         self.hl = (self.hl + 1) & 0xFFFF
         self.bc = (self.bc - 1) & 0xFFFF
         self.zero = self.a == value
 
     def _ini(self) -> None:
         value = self.ports.read_port(self.c)
-        self.memory.write_byte(self.hl, value)
+        self._write_byte(self.hl, value)
         self.hl = (self.hl + 1) & 0xFFFF
         self.b = (self.b - 1) & 0xFF
         self.zero = self.b == 0
 
     def _outi(self) -> None:
-        value = self.memory.read_byte(self.hl)
+        value = self._read_byte(self.hl)
         self.ports.write_port(self.c, value)
         self.hl = (self.hl + 1) & 0xFFFF
         self.b = (self.b - 1) & 0xFF

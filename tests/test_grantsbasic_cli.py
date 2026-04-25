@@ -120,6 +120,17 @@ class GrantsBasicCliTests(unittest.TestCase):
         self.assertEqual(config.boot_step_budget, 123)
         self.assertEqual(config.prompt_step_budget, 456)
 
+    def test_default_max_steps_flows_into_machine_config(self) -> None:
+        with patch.dict(os.environ, {}, clear=False), patch("grants_basic.cli.GrantSearleMachine") as machine_cls:
+            machine = machine_cls.return_value
+            machine.run_terminal.return_value = 0
+
+            result = main([])
+
+        self.assertEqual(result, 0)
+        config = machine_cls.call_args.args[0]
+        self.assertEqual(config.max_steps, 50_000)
+
     def test_step_budget_env_flows_into_machine_config(self) -> None:
         env = {
             "GRANTS_BASIC_BOOT_STEP_BUDGET": "789",

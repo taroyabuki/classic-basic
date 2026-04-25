@@ -178,38 +178,22 @@ run_qbasic() {
 emit_filtered_dos_batch_diff() {
   local source_path="$1"
   local state_path="$2"
-  local current_filtered
-
-  current_filtered="$(mktemp)"
-  python3 "${ROOT_DIR}/src/dos_batch_filter.py" <"${source_path}" >"${current_filtered}"
-  python3 - "${state_path}" "${current_filtered}" <<'PY'
-from pathlib import Path
-import sys
-
-previous_path = Path(sys.argv[1])
-current_path = Path(sys.argv[2])
-previous_lines = previous_path.read_text(encoding="utf-8", errors="replace").splitlines()
-current_lines = current_path.read_text(encoding="utf-8", errors="replace").splitlines()
-
-prefix = 0
-limit = min(len(previous_lines), len(current_lines))
-while prefix < limit and previous_lines[prefix] == current_lines[prefix]:
-    prefix += 1
-
-for line in current_lines[prefix:]:
-    print(line)
-PY
-  mv "${current_filtered}" "${state_path}"
+  python3 "${ROOT_DIR}/src/dos_batch_stream_diff.py" "${source_path}" "${state_path}"
 }
 
 run_qbasic_file() {
   local runtime_dir="$1"
   local home_dir="$2"
   local program_name="$3"
+  local batch_program_name="RUNEXIT.BAS"
   local capture_name="${DEFAULT_QBASIC_CAPTURE_NAME}"
   local capture_path="${runtime_dir}/drive_c/${capture_name}"
   local timeout_spec="${CLASSIC_BASIC_DOSEMU_BATCH_TIMEOUT:-}"
   local status=0
+
+  python3 "${ROOT_DIR}/src/basic_batch_exit.py" \
+    "${runtime_dir}/drive_c/${program_name}" \
+    "${runtime_dir}/drive_c/${batch_program_name}"
 
   # Write a DOS batch file: run QBasic then exit dosemu.
   # Try EXITEMU first (dosemu2-specific); EXIT is a FreeDOS built-in fallback
@@ -217,7 +201,7 @@ run_qbasic_file() {
   # if EXITEMU works dosemu exits immediately; if not, EXIT closes COMMAND.COM.
   local batch_path="${runtime_dir}/drive_c/RUNQB.BAT"
   printf '@ECHO OFF\r\nQBASIC /RUN %s > %s\r\nEXITEMU\r\nEXIT\r\n' \
-    "${program_name}" "${capture_name}" > "${batch_path}"
+    "${batch_program_name}" "${capture_name}" > "${batch_path}"
 
   local out_txt_path
   out_txt_path="$(find "${runtime_dir}/drive_c" -maxdepth 1 -iname 'out.txt' 2>/dev/null | head -1)"
@@ -270,16 +254,30 @@ run_qbasic_file() {
   fi
   local elapsed_ms=0
   local timed_out=false
+  local last_capture_size=0
+  local stable_capture_polls=0
   while true; do
     if [[ -f "${capture_path}" && -s "${capture_path}" ]]; then
       emit_filtered_dos_batch_diff "${capture_path}" "${filtered_capture_state}"
       capture_streamed=true
+      local current_capture_size
+      current_capture_size="$(wc -c < "${capture_path}" 2>/dev/null || echo 0)"
+      if (( current_capture_size == last_capture_size )); then
+        stable_capture_polls=$(( stable_capture_polls + 1 ))
+      else
+        stable_capture_polls=0
+        last_capture_size=${current_capture_size}
+      fi
     fi
     if ! kill -0 "${dosemu_pid}" 2>/dev/null; then
       wait "${dosemu_pid}" 2>/dev/null || status=$?
       break
     fi
     if (( max_ms > 0 && elapsed_ms >= max_ms )); then
+      local capture_completed=false
+      if [[ -f "${capture_path}" && -s "${capture_path}" ]] && (( stable_capture_polls >= 5 )); then
+        capture_completed=true
+      fi
       {
         echo "--- dosemu timeout diagnostic (pid=${dosemu_pid}) ---"
         echo "  caller ulimit -u: $(ulimit -u 2>/dev/null)"
@@ -300,8 +298,12 @@ run_qbasic_file() {
       } >> "${runtime_dir}/dosemu.log" 2>/dev/null || true
       kill -- -"${dosemu_pid}" 2>/dev/null || true
       wait "${dosemu_pid}" 2>/dev/null || true
-      timed_out=true
-      status=124
+      if [[ "${capture_completed}" == true ]]; then
+        status=0
+      else
+        timed_out=true
+        status=124
+      fi
       break
     fi
     sleep 0.2
@@ -314,7 +316,7 @@ run_qbasic_file() {
   fi
   if [[ -f "${capture_path}" ]] && [[ -s "${capture_path}" ]]; then
     if [[ "${capture_streamed}" == true ]]; then
-      emit_filtered_dos_batch_diff "${capture_path}" "${filtered_capture_state}"
+      python3 "${ROOT_DIR}/src/dos_batch_stream_diff.py" --final "${capture_path}" "${filtered_capture_state}"
     else
       python3 "${ROOT_DIR}/src/dos_batch_filter.py" <"${capture_path}"
     fi

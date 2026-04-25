@@ -16,6 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import fbasic_batch
+from mandelbrot_output import extract_any_mandelbrot_block, has_mandelbrot_art_fragments
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -622,6 +623,33 @@ def _merge_output_window(previous_lines: list[str], current_lines: list[str]) ->
     return current_lines, 0
 
 
+def _is_subsequence(subseq: list[str], seq: list[str]) -> bool:
+    if not subseq:
+        return True
+    pos = 0
+    for item in subseq:
+        while pos < len(seq) and seq[pos] != item:
+            pos += 1
+        if pos >= len(seq):
+            return False
+        pos += 1
+    return True
+
+
+def _merge_cumulative_output_history(history: list[str], current_lines: list[str]) -> list[str]:
+    if not history:
+        return list(current_lines)
+    if not current_lines:
+        return list(history)
+    if history == current_lines or _is_subsequence(current_lines, history):
+        return list(history)
+    max_overlap = min(len(history), len(current_lines))
+    for overlap in range(max_overlap, -1, -1):
+        if history[-overlap:] == current_lines[:overlap]:
+            return [*history, *current_lines[overlap:]]
+    return [*history, *current_lines]
+
+
 def filter_new_lines(lines, sent_text: str):
     echoed = {
         line.strip().upper()
@@ -683,8 +711,17 @@ def _looks_like_garbage_run_line(line: str) -> bool:
         return False
     if stripped == "LX":
         return True
-    if stripped.startswith("LX") and stripped.endswith('"'):
-        return True
+    if stripped.startswith("LX"):
+        groups = [group for group in re.split(r"\s{2,}", stripped) if group.strip()]
+        compact_groups = [re.sub(r"[^A-Za-z0-9]", "", group) for group in groups]
+        short_groups = [group for group in compact_groups if group]
+        if short_groups and len(short_groups) >= 2 and all(len(group) <= 3 for group in short_groups):
+            if (
+                '"' in stripped
+                or any(char.islower() for char in stripped)
+                or any(not char.isalnum() and not char.isspace() for char in stripped)
+            ):
+                return True
     # FM-11 redraw artifacts tend to be a few short alnum fragments separated by
     # wide gaps, often with a dangling quote from the screen edge.
     groups = [group for group in re.split(r"\s{2,}", stripped.rstrip('"')) if group.strip()]
@@ -1103,6 +1140,9 @@ def collect_run_output(
     emitted = []
     previous_output_lines: list[str] = []
     triggered = any(line.strip().upper() == "RUN" for line in sent_text.replace("\r", "\n").split("\n") if line.strip())
+    pending_art_block: list[str] = []
+    mandelbrot_history_lines: list[str] = []
+    stable_art_polls = 0
     _sleep_with_deadline(
         RUN_OUTPUT_POLL_DELAY,
         deadline=wait_deadline,
@@ -1110,14 +1150,28 @@ def collect_run_output(
     )
     raw_screen = session.copy_screen(deadline=wait_deadline)
     latest = normalize_screen_text(raw_screen)
-    previous_output_lines, triggered = _extract_run_output_lines(
-        latest,
-        marker=marker,
-        triggered=triggered,
-    )
-    emitted.extend(previous_output_lines)
-    if previous_output_lines and on_lines is not None:
-        on_lines(previous_output_lines)
+    art_block = extract_any_mandelbrot_block(latest)
+    if art_block and _screen_lines_have_ready_prompt(latest):
+        if on_lines is not None:
+            on_lines(art_block)
+        return latest, art_block
+    saw_art_fragments = has_mandelbrot_art_fragments(latest)
+    if saw_art_fragments:
+        mandelbrot_history_lines = _merge_cumulative_output_history(mandelbrot_history_lines, latest)
+        history_art_block = extract_any_mandelbrot_block(mandelbrot_history_lines)
+        if history_art_block and _screen_lines_have_ready_prompt(latest):
+            if on_lines is not None:
+                on_lines(history_art_block)
+            return latest, history_art_block
+    if not saw_art_fragments:
+        previous_output_lines, triggered = _extract_run_output_lines(
+            latest,
+            marker=marker,
+            triggered=triggered,
+        )
+        emitted.extend(previous_output_lines)
+        if previous_output_lines and on_lines is not None:
+            on_lines(previous_output_lines)
     if _screen_lines_have_ready_prompt(latest):
         return latest, emitted
 
@@ -1139,6 +1193,52 @@ def collect_run_output(
         current = normalize_screen_text(raw_screen)
         current_changed = current != latest
         current_output_lines: list[str] = []
+        art_block = extract_any_mandelbrot_block(current)
+        if art_block:
+            if art_block == pending_art_block:
+                stable_art_polls += 1
+            else:
+                pending_art_block = art_block
+                stable_art_polls = 0
+            if stable_art_polls >= 1 or _screen_lines_have_ready_prompt(current):
+                if on_lines is not None:
+                    on_lines(art_block)
+                return current, art_block
+            latest = current
+            stagnant_since = None
+            _sleep_with_deadline(
+                RUN_OUTPUT_POLL_DELAY,
+                deadline=wait_deadline,
+                message="timed out waiting for BASIC program completion",
+            )
+            continue
+        saw_current_art_fragments = has_mandelbrot_art_fragments(current)
+        if saw_current_art_fragments or saw_art_fragments:
+            latest = current
+            stagnant_since = None
+            saw_art_fragments = True
+            if saw_current_art_fragments:
+                mandelbrot_history_lines = _merge_cumulative_output_history(
+                    mandelbrot_history_lines,
+                    current,
+                )
+                history_art_block = extract_any_mandelbrot_block(mandelbrot_history_lines)
+                if history_art_block:
+                    if history_art_block == pending_art_block:
+                        stable_art_polls += 1
+                    else:
+                        pending_art_block = history_art_block
+                        stable_art_polls = 0
+                    if stable_art_polls >= 1 or _screen_lines_have_ready_prompt(current):
+                        if on_lines is not None:
+                            on_lines(history_art_block)
+                        return current, history_art_block
+            _sleep_with_deadline(
+                RUN_OUTPUT_POLL_DELAY,
+                deadline=wait_deadline,
+                message="timed out waiting for BASIC program completion",
+            )
+            continue
         if current_changed:
             current_output_lines, triggered = _extract_run_output_lines(
                 current,
