@@ -924,7 +924,7 @@ class FM11BasicRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertIsNone(collect_run_output.call_args.kwargs["timeout"])
-        self.assertIs(collect_run_output.call_args.kwargs["on_lines"], fm11basic.emit_lines)
+        self.assertNotIn("on_lines", collect_run_output.call_args.kwargs)
 
     def test_run_basic_with_timeout_uses_full_remaining_budget_for_batch_collection(self) -> None:
         session = mock.Mock()

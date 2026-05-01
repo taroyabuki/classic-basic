@@ -633,7 +633,7 @@ def _wait_for_fm7_snapshot(
         else:
             history_output_lines = output_lines[:-1]
         if history_output_lines:
-            diff_lines = _new_output_lines_from_window(previous_output_window or [], history_output_lines)
+            diff_lines = _new_output_lines_from_window(accumulated_output_lines, history_output_lines)
             if diff_lines:
                 accumulated_output_lines.extend(diff_lines)
                 if emit_output_line is not None and not saw_mandelbrot_fragments:
@@ -1423,6 +1423,13 @@ def _new_output_lines_from_window(previous_lines: list[str], current_lines: list
     if best_match_length >= 2 and best_match_start == 0:
         return current_lines[best_match_end:]
 
+    known_lines = set(previous_lines)
+    replay_prefix = 0
+    while replay_prefix < len(current_lines) and current_lines[replay_prefix] in known_lines:
+        replay_prefix += 1
+    if replay_prefix:
+        return current_lines[replay_prefix:]
+
     return list(current_lines)
 
 
@@ -1464,6 +1471,31 @@ def _collapse_repeated_prefix(lines: list[str]) -> list[str]:
         if not removed:
             break
     return collapsed
+
+
+def _drop_replayed_output_lines(lines: list[str]) -> list[str]:
+    without_fragments: list[str] = []
+    stripped_lines = [line.strip() for line in lines]
+    for index, line in enumerate(lines):
+        stripped = stripped_lines[index]
+        if stripped and any(
+            later.startswith(stripped) and len(later) > len(stripped)
+            for later in stripped_lines[index + 1 :]
+        ):
+            continue
+        without_fragments.append(line)
+
+    keys = [line.strip() for line in without_fragments]
+    if len(set(keys)) < 20:
+        return without_fragments
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for line, key in zip(without_fragments, keys):
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(line)
+    return deduped
 
 
 def _merge_cumulative_history(history: list[str], window: list[str]) -> list[str]:
@@ -1810,6 +1842,8 @@ def run_batch(
                 output_lines = _extract_output_lines_from_candidate(captured_lines)
             if expect_mandelbrot_art and not output_lines:
                 output_lines = _normalize_symmetric_mandelbrot_output(captured_lines)
+            if not expect_mandelbrot_art:
+                output_lines = _drop_replayed_output_lines(output_lines)
             if not expect_mandelbrot_art and output_lines:
                 new_output_lines = output_lines
                 for line in new_output_lines:

@@ -18,6 +18,7 @@ from pc8001_terminal.machine import (
     PC8001Machine,
     RomSpec,
     _filter_nbasic_batch_output,
+    _format_nbasic_interactive_output,
 )
 from pc8001_terminal.memory import PC8001Memory
 from pc8001_terminal.ports import (
@@ -629,6 +630,52 @@ class PC8001MachineTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("FIRST\n", fake_stdout.getvalue())
         self.assertIn("SECOND\n", fake_stdout.getvalue())
+
+    def test_run_host_terminal_does_not_insert_newline_between_output_chunks(self) -> None:
+        machine = PC8001Machine(PC8001Config(max_steps=10))
+        machine.last_result = ExecutionResult(reason="input_wait", steps=1, pc=0x0000)
+
+        def fake_inject_keys(values: list[int]) -> bool:
+            del values
+            machine.console_output = list("PI = 3. 1234 1234 1234 1234")
+            machine.console_output_offset = 0
+            machine.last_result = ExecutionResult(reason="step_limit", steps=10, pc=0x0001)
+            return True
+
+        def fake_run_firmware(*, max_steps: int) -> ExecutionResult:
+            del max_steps
+            machine.console_output.extend(" 1234\nOk")
+            machine.last_result = ExecutionResult(reason="input_wait", steps=3, pc=0x0002)
+            return machine.last_result
+
+        machine.inject_keys = fake_inject_keys  # type: ignore[method-assign]
+        machine.run_firmware = fake_run_firmware  # type: ignore[method-assign]
+
+        fake_stdout = io.StringIO()
+        with patch("sys.stdout", fake_stdout), patch("builtins.input", side_effect=["RUN", EOFError]):
+            rc = machine._run_host_terminal()
+
+        self.assertEqual(rc, 0)
+        self.assertIn("PI = 3. 1234 1234 1234 1234 1234\nOk\n", fake_stdout.getvalue())
+
+    def test_format_nbasic_interactive_output_converts_form_feed_and_finishes_prompt(self) -> None:
+        self.assertEqual(
+            _format_nbasic_interactive_output("A\fOk", ready_for_input=True),
+            "A\x1b[2J\x1b[H\nOk\n",
+        )
+
+    def test_format_nbasic_interactive_output_separates_trailing_prompt(self) -> None:
+        self.assertEqual(
+            _format_nbasic_interactive_output("Break in 80Ok", ready_for_input=True),
+            "Break in 80\nOk\n",
+        )
+        self.assertEqual(
+            _format_nbasic_interactive_output("Break in 80Ok\n", ready_for_input=True),
+            "Break in 80\nOk\n",
+        )
+
+    def test_filter_nbasic_batch_output_removes_form_feed(self) -> None:
+        self.assertEqual(_filter_nbasic_batch_output("\fPI\nOk\n"), "PI\n")
 
     def test_boot_demo_lists_loaded_program_before_interactive_mode(self) -> None:
         machine = PC8001Machine(

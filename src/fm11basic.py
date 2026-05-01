@@ -33,7 +33,7 @@ BASE_WINE_PREFIX_LOCK = CACHE_ROOT / "wine-prefix-base.lock"
 FAST_STARTUP_ANSWER_DELAY = 0.15
 FAST_STARTUP_READY_TIMEOUT = 5.0
 STARTUP_POLL_DELAY = 0.2
-RUN_OUTPUT_POLL_DELAY = 0.2
+RUN_OUTPUT_POLL_DELAY = 0.03
 LOAD_BATCH_SIZE = 3
 LARGE_LOAD_BATCH_SIZE = 5
 LOAD_BATCH_DELAY = 0.15
@@ -815,6 +815,31 @@ def emit_lines(lines) -> None:
     sys.stdout.flush()
 
 
+def _drop_replayed_output_lines(lines: list[str]) -> list[str]:
+    without_fragments: list[str] = []
+    stripped_lines = [line.strip() for line in lines]
+    for index, line in enumerate(lines):
+        stripped = stripped_lines[index]
+        if stripped and any(
+            later.startswith(stripped) and len(later) > len(stripped)
+            for later in stripped_lines[index + 1 :]
+        ):
+            continue
+        without_fragments.append(line)
+
+    keys = [line.strip() for line in without_fragments]
+    if len(set(keys)) < 20:
+        return without_fragments
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for line, key in zip(without_fragments, keys):
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(line)
+    return deduped
+
+
 def submit_line(session: RuntimeSession, line: str, *, deadline: float | None = None) -> None:
     if not line:
         session.key("Return", deadline=deadline)
@@ -1143,11 +1168,6 @@ def collect_run_output(
     pending_art_block: list[str] = []
     mandelbrot_history_lines: list[str] = []
     stable_art_polls = 0
-    _sleep_with_deadline(
-        RUN_OUTPUT_POLL_DELAY,
-        deadline=wait_deadline,
-        message="timed out waiting for BASIC program completion",
-    )
     raw_screen = session.copy_screen(deadline=wait_deadline)
     latest = normalize_screen_text(raw_screen)
     art_block = extract_any_mandelbrot_block(latest)
@@ -1436,8 +1456,8 @@ def _run_basic_once(
                 ),
                 marker="CBATCHBEGIN",
                 deadline=deadline,
-                on_lines=emit_lines,
             )
+            emit_lines(_drop_replayed_output_lines(lines))
             return 0
 
         for raw_line in sys.stdin:
@@ -1455,6 +1475,16 @@ def _run_basic_once(
                         for source_line in source_text.splitlines()
                         if source_line.strip()
                     }
+                screen_lines, output_lines = collect_run_output(
+                    session,
+                    before_lines,
+                    line + "\n",
+                    timeout=None,
+                    deadline=deadline,
+                )
+                raw_screen = "\n".join(screen_lines)
+                emit_lines(_drop_replayed_output_lines(output_lines))
+                continue
             raw_screen, screen_lines = collect_command_output(
                 session,
                 before_lines,

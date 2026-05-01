@@ -314,6 +314,9 @@ class PC8001Machine:
         if value == 0x09:
             self.console_output.append("\t")
             return
+        if value == 0x0C:
+            self.console_output.append("\f")
+            return
         if 0x20 <= value <= 0x7E:
             self.console_output.append(chr(value))
 
@@ -409,9 +412,13 @@ class PC8001Machine:
         while True:
             text = self.consume_console_output()
             if text:
-                sys.stdout.write(text)
-                if not text.endswith("\n"):
-                    sys.stdout.write("\n")
+                sys.stdout.write(
+                    _format_nbasic_interactive_output(
+                        text,
+                        ready_for_input=self.last_result is not None
+                        and self.last_result.reason == "input_wait",
+                    )
+                )
                 sys.stdout.flush()
             if self.last_result is not None and self.last_result.reason == "step_limit":
                 self.run_firmware(max_steps=self.config.max_steps)
@@ -433,6 +440,7 @@ _NBASIC_TRAILING_PROMPT_RE = re.compile(r"^(.*?)(\s+Ok)(\r?\n?)$")
 
 def _filter_nbasic_batch_output(text: str) -> str:
     """Remove ROM banner and bare 'Ok' prompts from N-BASIC batch output."""
+    text = text.replace("\f", "")
     lines = text.splitlines(keepends=True)
     filtered: list[str] = []
     for index, line in enumerate(lines):
@@ -457,6 +465,18 @@ def _strip_trailing_nbasic_prompt(line: str) -> str:
     if not all(re.fullmatch(r"[0-9A-Fa-f.+-]+", token) is not None for token in tokens):
         return line
     return f"{payload.rstrip()}{newline}"
+
+
+def _format_nbasic_interactive_output(text: str, *, ready_for_input: bool) -> str:
+    text = text.replace("\f", "\x1b[2J\x1b[H")
+    if ready_for_input:
+        newline = "\n" if text.endswith("\n") else ""
+        core = text[:-1] if newline else text
+        if core.endswith("Ok") and len(core) > 2 and core[-3] != "\n":
+            text = f"{core[:-2]}\nOk{newline}"
+    if not ready_for_input or not text or text.endswith("\n"):
+        return text
+    return f"{text}\n"
 
 
 def _read_basic_source_text(path: Path) -> str:

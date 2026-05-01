@@ -298,6 +298,8 @@ class BatchOutputTracker:
                 candidates.append(normalized)
         if not candidates:
             return
+        if _is_subsequence(candidates, self._lines):
+            return
 
         # Otherwise find the longest suffix of _lines that matches a prefix of
         # candidates and append only the new tail.
@@ -384,7 +386,12 @@ def _normalize_interactive_completed_line(text: str) -> str | None:
     return completed
 
 
-def run_loop(bridge: OpenMSXBridge, terminal: "RawTerminal") -> None:  # type: ignore[name-defined]
+def run_loop(
+    bridge: OpenMSXBridge,
+    terminal: "RawTerminal",  # type: ignore[name-defined]
+    *,
+    loaded_program_lines: list[str] | None = None,
+) -> None:
     """Run the interactive terminal loop until the user exits.
 
     ``terminal`` must expose ``input_ready()``, ``read_byte()``, and
@@ -422,6 +429,40 @@ def run_loop(bridge: OpenMSXBridge, terminal: "RawTerminal") -> None:  # type: i
                 continue
 
             if byte == 0x0D or byte == 0x0A:  # Enter
+                submitted_line = local_input_line
+                if loaded_program_lines is not None and submitted_line.strip().upper() == "RUN":
+                    try:
+                        before_lines, before_cursor_row = _get_screen_state(bridge, timeout=1.0)
+                    except TimeoutError:
+                        before_lines, before_cursor_row = initial_lines, initial_cursor_row
+                    bridge.type_text(_ENTER, via_keybuf=True, timeout=_INTERACTIVE_INPUT_TIMEOUT)
+                    terminal.write("\r\n")
+                    ignored_lines = _build_ignored_source_lines(loaded_program_lines or [])
+                    output_lines = _drain_until_prompt(
+                        bridge,
+                        timeout=_BATCH_RUN_TIMEOUT,
+                        initial_lines=before_lines,
+                        initial_cursor_row=before_cursor_row,
+                        ignored_lines=ignored_lines,
+                    )
+                    for line in _filter_batch_result_lines(
+                        output_lines,
+                        loaded_program_lines or [],
+                        ignored_lines,
+                    ):
+                        terminal.write(f"{line}\r\n")
+                    try:
+                        lines_after_run, cursor_after_run = _get_screen_state(bridge, timeout=1.0)
+                        tracker.seed(
+                            lines_after_run,
+                            _normalize_interactive_cursor_row(lines_after_run, cursor_after_run),
+                        )
+                    except TimeoutError:
+                        pass
+                    pending_submitted_line = None
+                    local_input_line = ""
+                    current_cursor_line = ""
+                    continue
                 bridge.type_text(_ENTER, via_keybuf=True, timeout=_INTERACTIVE_INPUT_TIMEOUT)
                 terminal.write("\r\n")
                 pending_submitted_line = local_input_line
@@ -570,7 +611,11 @@ def run_interactive(bridge: OpenMSXBridge, loaded_program_lines: list[str] | Non
             loaded_program_render = _loaded_program_listing_render(loaded_program_lines)
             if loaded_program_render:
                 terminal.write(loaded_program_render)
-            run_loop(bridge, terminal)
+            _configure_batch_speed(bridge)
+            if loaded_program_lines is None:
+                run_loop(bridge, terminal)
+            else:
+                run_loop(bridge, terminal, loaded_program_lines=loaded_program_lines)
         finally:
             terminal.write(_RESET_CURSOR_STYLE)
             terminal.write(_SHOW_CURSOR)
@@ -580,8 +625,8 @@ def _configure_batch_speed(bridge: OpenMSXBridge) -> None:
     command = getattr(bridge, "command", None)
     if command is None:
         return
-    command("set throttle off", timeout=3.0)
-    command("set speed 999", timeout=3.0)
+    command("set throttle on", timeout=3.0)
+    command("set speed 300", timeout=3.0)
 
 
 def run_batch(bridge: OpenMSXBridge, program: Path) -> int:
@@ -933,7 +978,32 @@ def _filter_batch_result_lines(
         if _looks_like_loaded_source_fragment(stripped, loaded_lines):
             continue
         filtered.append(line)
-    return _merge_wrapped_batch_result_lines(filtered)
+    return _drop_replayed_output_lines(_merge_wrapped_batch_result_lines(filtered))
+
+
+def _drop_replayed_output_lines(lines: list[str]) -> list[str]:
+    without_fragments: list[str] = []
+    stripped_lines = [line.strip() for line in lines]
+    for index, line in enumerate(lines):
+        stripped = stripped_lines[index]
+        if stripped and any(
+            later.startswith(stripped) and len(later) > len(stripped)
+            for later in stripped_lines[index + 1 :]
+        ):
+            continue
+        without_fragments.append(line)
+
+    keys = [line.strip() for line in without_fragments]
+    if len(set(keys)) < 20:
+        return without_fragments
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for line, key in zip(without_fragments, keys):
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(line)
+    return deduped
 
 
 def _has_segmented_mandelbrot_fragments_with_gutter(lines: list[str]) -> bool:

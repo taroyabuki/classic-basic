@@ -350,27 +350,57 @@ def _copy_console_snapshot(
 ) -> threading.Thread:
     def worker() -> None:
         previous_lines: list[str] = []
+        emitted_lines: list[str] = []
+        processed_snapshot_count = 0
         while not stop_event.is_set():
-            current_lines = fbasic_batch._read_text_capture_lines(output_path)
-            diff_lines = fbasic_batch._emit_console_diff(previous_lines, current_lines)
+            snapshots, append_only = _read_console_snapshots(output_path)
+            pending_snapshots = snapshots[processed_snapshot_count:] if append_only else snapshots
+            for current_lines in pending_snapshots:
+                if append_only:
+                    processed_snapshot_count += 1
+                if append_only:
+                    diff_lines = fbasic_batch._new_output_lines_from_window(emitted_lines, current_lines)
+                else:
+                    diff_lines = fbasic_batch._emit_console_diff(previous_lines, current_lines)
+                if console_echo_filter is not None:
+                    diff_lines = console_echo_filter.filter_lines(diff_lines)
+                for line in diff_lines:
+                    sys.stdout.write(f"{line}\n")
+                    sys.stdout.flush()
+                emitted_lines.extend(diff_lines)
+                previous_lines = current_lines
+            time.sleep(0.2)
+        snapshots, append_only = _read_console_snapshots(output_path)
+        pending_snapshots = snapshots[processed_snapshot_count:] if append_only else snapshots
+        for current_lines in pending_snapshots:
+            if append_only:
+                diff_lines = fbasic_batch._new_output_lines_from_window(emitted_lines, current_lines)
+            else:
+                diff_lines = fbasic_batch._emit_console_diff(previous_lines, current_lines)
             if console_echo_filter is not None:
                 diff_lines = console_echo_filter.filter_lines(diff_lines)
             for line in diff_lines:
                 sys.stdout.write(f"{line}\n")
                 sys.stdout.flush()
+            emitted_lines.extend(diff_lines)
             previous_lines = current_lines
-            time.sleep(0.2)
-        current_lines = fbasic_batch._read_text_capture_lines(output_path)
-        diff_lines = fbasic_batch._emit_console_diff(previous_lines, current_lines)
-        if console_echo_filter is not None:
-            diff_lines = console_echo_filter.filter_lines(diff_lines)
-        for line in diff_lines:
-            sys.stdout.write(f"{line}\n")
-            sys.stdout.flush()
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
     return thread
+
+
+def _read_console_snapshots(output_path: Path) -> tuple[list[list[str]], bool]:
+    append_only = False
+    try:
+        append_only = output_path.exists() and fbasic_batch._FM7_SNAPSHOT_MARKER in output_path.read_text(encoding="ascii")
+    except OSError:
+        append_only = False
+    snapshots = fbasic_batch._read_fm7_capture_snapshots(output_path)
+    if snapshots:
+        return snapshots, append_only
+    lines = fbasic_batch._read_text_capture_lines(output_path)
+    return ([lines] if lines else []), False
 
 
 def run_interactive_session(
@@ -429,8 +459,9 @@ def run_headless_interactive_session(
     temp_dir: Path | None = None
     input_path: Path | None = None
     stop_event = threading.Event()
+    stdin_is_tty = bool(getattr(sys.stdin, "isatty", lambda: False)())
     console_echo_filter = _ConsoleEchoFilter(
-        suppress_terminal_echo=bool(getattr(sys.stdin, "isatty", lambda: False)())
+        suppress_terminal_echo=stdin_is_tty
     )
     _prime_console_echo_filter_for_file_load(console_echo_filter, file_path)
     try:
@@ -460,7 +491,9 @@ def run_headless_interactive_session(
 
         stdout_thread = _copy_stream(proc.stdout, sys.stdout.buffer, startup_filter)
         stderr_thread = _copy_stream(proc.stderr, sys.stderr.buffer, startup_filter)
-        console_thread = _copy_console_snapshot(output_path, stop_event, console_echo_filter)
+        console_thread = None
+        if stdin_is_tty:
+            console_thread = _copy_console_snapshot(output_path, stop_event, console_echo_filter)
         proc._classic_basic_io_threads = tuple(
             thread
             for thread in (stdout_thread, stderr_thread, console_thread)
@@ -472,6 +505,11 @@ def run_headless_interactive_session(
             _forward_stdin_to_input_queue(input_path, console_echo_filter)
         except KeyboardInterrupt:
             pass
+        if not stdin_is_tty:
+            time.sleep(0.2)
+        _wait_for_headless_ready_output(output_path, timeout=30.0)
+        if not stdin_is_tty:
+            _emit_headless_non_tty_snapshot_output(output_path)
         stop_event.set()
         _shutdown_interactive_process(proc, temp_dir=temp_dir)
         _join_io_threads(proc)
@@ -480,6 +518,27 @@ def run_headless_interactive_session(
         stop_event.set()
         if temp_dir is not None:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _emit_headless_non_tty_snapshot_output(output_path: Path) -> None:
+    accumulated: list[str] = []
+    last_snapshot: list[str] = []
+    snapshots, _ = _read_console_snapshots(output_path)
+    for snapshot in snapshots:
+        last_snapshot = snapshot
+        output_lines = fbasic_batch._extract_output_lines_from_candidate(snapshot)
+        if not output_lines:
+            continue
+        ready = any(fbasic_batch.is_ready_line(line) for line in snapshot)
+        stable_lines = output_lines if ready else output_lines[:-1]
+        diff_lines = fbasic_batch._new_output_lines_from_window(accumulated, stable_lines)
+        accumulated.extend(diff_lines)
+    for line in fbasic_batch._drop_replayed_output_lines(accumulated):
+        sys.stdout.write(f"{line}\n")
+    if not accumulated:
+        for line in last_snapshot:
+            sys.stdout.write(f"{line}\n")
+    sys.stdout.flush()
 
 
 def main(argv: list[str] | None = None) -> int:

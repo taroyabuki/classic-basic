@@ -100,6 +100,65 @@ def _merge_cumulative_output_history(history: list[str], current_lines: list[str
     return [*history, *current_lines]
 
 
+def _new_output_lines_from_history(history: list[str], current_lines: list[str]) -> list[str]:
+    def _keyed(lines: list[str]) -> list[str]:
+        return [line.strip() for line in lines]
+
+    if not current_lines:
+        return []
+    if not history:
+        return list(current_lines)
+    history_keys = _keyed(history)
+    current_keys = _keyed(current_lines)
+    if _is_subsequence(current_keys, history_keys):
+        return []
+    if _is_subsequence(history_keys, current_keys):
+        pos = 0
+        for item in history_keys:
+            while current_keys[pos] != item:
+                pos += 1
+            pos += 1
+        return current_lines[pos:]
+
+    overlap = min(len(history), len(current_lines))
+    while overlap > 0:
+        if history_keys[-overlap:] == current_keys[:overlap]:
+            return current_lines[overlap:]
+        overlap -= 1
+    history_key_set = set(history_keys)
+    replay_prefix = 0
+    while replay_prefix < len(current_keys) and current_keys[replay_prefix] in history_key_set:
+        replay_prefix += 1
+    if replay_prefix:
+        return current_lines[replay_prefix:]
+    return list(current_lines)
+
+
+def _drop_replayed_output_lines(lines: list[str]) -> list[str]:
+    without_fragments: list[str] = []
+    stripped_lines = [line.strip() for line in lines]
+    for index, line in enumerate(lines):
+        stripped = stripped_lines[index]
+        if stripped and any(
+            later.startswith(stripped) and len(later) > len(stripped)
+            for later in stripped_lines[index + 1 :]
+        ):
+            continue
+        without_fragments.append(line)
+
+    keys = [line.strip() for line in without_fragments]
+    if len(set(keys)) < 20:
+        return without_fragments
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for line, key in zip(without_fragments, keys):
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(line)
+    return deduped
+
+
 def _resolve_quasi88_bin() -> Path:
     return Path(os.environ.get("CLASSIC_BASIC_N88_QUASI88_BIN", _DEFAULT_QUASI88_BIN))
 
@@ -169,6 +228,7 @@ class N88BasicCLI:
         self._last_rendered_screen_lines: list[str] = []
         self._interactive_line_open = False
         self._interactive_line_length = 0
+        self._run_host_nowait = True
 
     def _quasi88_command(self) -> list[str]:
         return [
@@ -193,7 +253,10 @@ class N88BasicCLI:
         env["SDL_AUDIODRIVER"] = "dummy"
         env["N88BASIC_BRIDGE_ONLY"] = "1"
         env["N88BASIC_CONTROL_SOCKET"] = self._ensure_control_socket_path()
-        self._start_quasi88_process([*self._quasi88_command(), "-nowait", "-hsbasic"], env)
+        command = [*self._quasi88_command(), "-hsbasic"]
+        if self._run_host_nowait:
+            command.insert(-1, "-nowait")
+        self._start_quasi88_process(command, env)
 
     def _start_quasi88_process(self, command: list[str], env: dict[str, str]) -> None:
         self.quasi88_proc = subprocess.Popen(
@@ -467,7 +530,12 @@ class N88BasicCLI:
 
         # Close any in-progress input line at column 0 before printing settled output.
         prefix = "\r\n" if self._interactive_line_open else ""
-        rendered = prefix + "\r\n".join(lines[common:]) + "\r\n"
+        changed_lines = lines[common:]
+        if previous and common < len(previous):
+            suffix_lines = _new_output_lines_from_history(previous, lines)
+            if suffix_lines and len(suffix_lines) < len(lines):
+                changed_lines = suffix_lines
+        rendered = prefix + "\r\n".join(changed_lines) + "\r\n"
         self._interactive_line_open = False
         self._interactive_line_length = 0
         return rendered
@@ -756,6 +824,7 @@ class N88BasicCLI:
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
     def run_interactive(self) -> int:
+        self._run_host_nowait = True
         session = self._enter_basic_interactive_mode()
         if session is None:
             return 1
@@ -769,6 +838,7 @@ class N88BasicCLI:
             self.stop_quasi88()
 
     def run_file_interactive(self, filepath: str) -> int:
+        self._run_host_nowait = False
         session = self._enter_basic_interactive_mode(filepath)
         if session is None:
             return 1
@@ -937,7 +1007,7 @@ class N88BasicCLI:
                 if bool(last_state["completed"])
                 else current_output_lines[:-1]
             )
-            new_lines = [line for line in _screen_suffix(accumulated_output, visible_lines) if line]
+            new_lines = [line for line in _new_output_lines_from_history(accumulated_output, visible_lines) if line]
             if new_lines:
                 accumulated_output.extend(new_lines)
                 if emit_output is not None:
@@ -1010,14 +1080,13 @@ class N88BasicCLI:
             timeout_seconds=timeout_seconds,
             saw_run_prompt=True,
             baseline_lines=baseline_lines,
-            emit_output=self._emit_run_stdout,
         )
         if completed:
             if not output_lines:
                 output_lines = list(
                     self._capture_run_screen_state(session, saw_run_prompt=True)["output_lines"]
                 )
-                self._emit_run_stdout(output_lines)
+            self._emit_run_stdout(_drop_replayed_output_lines(output_lines))
             return RUN_ERR_OK
         print("error: n88basic batch run timed out", file=sys.stderr)
         return RUN_ERR_TIMEOUT
@@ -1027,6 +1096,7 @@ class N88BasicCLI:
         n88basic_program_check.validate_program_path(Path(filepath))
 
         session = RunControlSession()
+        self._run_host_nowait = False
         if not self.ensure_run_bridge(session):
             print("error: control bridge unavailable", file=sys.stderr)
             session.disconnect()

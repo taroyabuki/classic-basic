@@ -788,7 +788,11 @@ class MsxBasicLoopTests(unittest.TestCase):
                 f"{_RESET_CURSOR_STYLE}{_SHOW_CURSOR}"
             ),
         )
-        run_loop_mock.assert_called_once_with(bridge, terminal)
+        run_loop_mock.assert_called_once_with(
+            bridge,
+            terminal,
+            loaded_program_lines=["10 PRINT 1", "20 END"],
+        )
 
 
 class MsxBasicBridgeTests(unittest.TestCase):
